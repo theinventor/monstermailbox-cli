@@ -62,6 +62,41 @@ func runCmd(t *testing.T, argv []string, respStatus int, respBody string) (strin
 	return out.String(), cap, err
 }
 
+// runCmdSplit is like runCmd but keeps stdout / stderr in separate
+// buffers so tests can assert hints land where they should.
+func runCmdSplit(t *testing.T, argv []string, respStatus int, respBody string) (string, string, *captured) {
+	t.Helper()
+
+	cap := &captured{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.method = r.Method
+		cap.path = r.URL.Path
+		cap.rawQuery = r.URL.RawQuery
+		cap.authHeader = r.Header.Get("Authorization")
+		cap.contentType = r.Header.Get("Content-Type")
+		cap.body, _ = io.ReadAll(r.Body)
+		_ = r.Body.Close()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(respStatus)
+		_, _ = io.WriteString(w, respBody)
+	}))
+	t.Cleanup(srv.Close)
+
+	t.Setenv(client.EnvAPIURL, srv.URL)
+	t.Setenv(client.EnvAPIKey, "mmb_testkey1234567890")
+
+	root := NewRootCmd()
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	root.SetArgs(argv)
+
+	_ = root.Execute()
+	return stdout.String(), stderr.String(), cap
+}
+
 // ── whoami ─────────────────────────────────────────────────────
 
 func TestWhoamiHitsVersionEndpoint(t *testing.T) {
@@ -110,6 +145,86 @@ func TestInboxListPropagatesStateAndLimitFlags(t *testing.T) {
 	}
 }
 
+func TestInboxListDefaultsToUnreadOnly(t *testing.T) {
+	_, cap, err := runCmd(t, []string{"inbox", "list"}, 200, `{"messages":[]}`)
+	if err != nil {
+		t.Fatalf("inbox list returned error: %v", err)
+	}
+	if !strings.Contains(cap.rawQuery, "unread=true") {
+		t.Errorf("expected default to filter unread=true; got: %q", cap.rawQuery)
+	}
+}
+
+func TestInboxListAllFlagDropsUnreadFilter(t *testing.T) {
+	_, cap, err := runCmd(t, []string{"inbox", "list", "--all"}, 200, `{"messages":[]}`)
+	if err != nil {
+		t.Fatalf("inbox list --all returned error: %v", err)
+	}
+	if strings.Contains(cap.rawQuery, "unread=") {
+		t.Errorf("--all MUST NOT send unread=...; got: %q", cap.rawQuery)
+	}
+}
+
+func TestInboxListPeekFlagPropagates(t *testing.T) {
+	_, cap, err := runCmd(t, []string{"inbox", "list", "--peek"}, 200, `{"messages":[]}`)
+	if err != nil {
+		t.Fatalf("inbox list --peek returned error: %v", err)
+	}
+	if !strings.Contains(cap.rawQuery, "peek=true") {
+		t.Errorf("--peek MUST send peek=true; got: %q", cap.rawQuery)
+	}
+}
+
+func TestInboxListEmitsHintToStderrAndKeepsStdoutClean(t *testing.T) {
+	respBody := `{
+      "messages": [{"id":"1"},{"id":"2"}],
+      "meta": {
+        "showing": {"state":"trusted","unread":true,"peek":false},
+        "returned": 2,
+        "counts": {
+          "trusted":     {"unread":2,"total":50},
+          "quarantined": {"unread":5,"total":5},
+          "rejected":    {"unread":0,"total":2}
+        }
+      }
+    }`
+	stdout, stderr, _ := runCmdSplit(t, []string{"inbox", "list"}, 200, respBody)
+	if !strings.Contains(stderr, "2 unread trusted shown") {
+		t.Errorf("hint should describe the page; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "quarantined 5 (5 unread)") {
+		t.Errorf("hint should surface other-state totals; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "--all") {
+		t.Errorf("hint should mention --all switch; stderr=%q", stderr)
+	}
+	if strings.Contains(stdout, "trusted shown") {
+		t.Errorf("hint MUST NOT pollute stdout (so | jq still works); stdout=%q", stdout)
+	}
+	var env map[string]any
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Errorf("stdout must be the raw JSON envelope; parse err=%v stdout=%q", err, stdout)
+	}
+}
+
+func TestInboxListAllFlagSuppressesAllHint(t *testing.T) {
+	respBody := `{
+      "messages": [{"id":"1"}],
+      "meta": {
+        "showing": {"state":"trusted","unread":false,"peek":false},
+        "returned": 1,
+        "counts": {"trusted":{"unread":0,"total":1},"quarantined":{"unread":0,"total":0},"rejected":{"unread":0,"total":0}}
+      }
+    }`
+	_, stderr, _ := runCmdSplit(t, []string{"inbox", "list", "--all"}, 200, respBody)
+	if strings.Contains(stderr, "use --all") {
+		t.Errorf("--all should suppress the use-all hint; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "1 trusted shown") {
+		t.Errorf("hint should still describe the page even with --all; stderr=%q", stderr)
+	}
+}
+
 // ── inbox watch ────────────────────────────────────────────────
 
 func TestInboxWatchGetsEventsEndpoint(t *testing.T) {
@@ -131,6 +246,26 @@ func TestMsgShowGetsMsgIdEndpoint(t *testing.T) {
 	}
 	if cap.method != http.MethodGet || cap.path != "/msg/abc123" {
 		t.Errorf("expected GET /msg/abc123; got %s %s", cap.method, cap.path)
+	}
+}
+
+func TestMsgShowPeekFlagPropagates(t *testing.T) {
+	_, cap, err := runCmd(t, []string{"msg", "show", "abc123", "--peek"}, 200, `{"id":"abc123"}`)
+	if err != nil {
+		t.Fatalf("msg show --peek returned error: %v", err)
+	}
+	if !strings.Contains(cap.rawQuery, "peek=true") {
+		t.Errorf("--peek MUST send peek=true; got: %q", cap.rawQuery)
+	}
+}
+
+func TestMsgShowDefaultDoesNotPeek(t *testing.T) {
+	_, cap, err := runCmd(t, []string{"msg", "show", "abc123"}, 200, `{"id":"abc123"}`)
+	if err != nil {
+		t.Fatalf("msg show returned error: %v", err)
+	}
+	if strings.Contains(cap.rawQuery, "peek=") {
+		t.Errorf("default msg show MUST NOT send peek; got: %q", cap.rawQuery)
 	}
 }
 

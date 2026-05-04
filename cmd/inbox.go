@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/theinventor/monstermailbox-cli/internal/client"
 	"github.com/spf13/cobra"
@@ -26,12 +27,24 @@ func newInboxCmd() *cobra.Command {
 //
 // Filters: --state (trusted|quarantined|rejected) maps onto the
 // OpenAPI query param. --limit + --since are passed through.
+//
+// Read state (default: only unread):
+//
+//	--all     show every message, including ones already read
+//	--peek    do NOT mark returned messages as read
+//
+// Why unread-by-default: this CLI is for agents, and an agent
+// pulling its inbox almost always means "what's new for me." If you
+// want everything (e.g. for an audit), pass --all. After the JSON
+// payload, a one-line hint goes to stderr (never stdout) so the JSON
+// stays clean for piping into jq.
 func newInboxListCmd() *cobra.Command {
 	var state, since string
 	var limit int
+	var all, peek bool
 	c := &cobra.Command{
 		Use:   "list",
-		Short: "List recent inbound messages (default: trusted)",
+		Short: "List recent inbound messages (default: unread, trust-state trusted)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cli := client.New()
 			q := url.Values{}
@@ -44,6 +57,12 @@ func newInboxListCmd() *cobra.Command {
 			if limit > 0 {
 				q.Set("limit", fmt.Sprintf("%d", limit))
 			}
+			if !all {
+				q.Set("unread", "true")
+			}
+			if peek {
+				q.Set("peek", "true")
+			}
 
 			resp, err := cli.Do(http.MethodGet, "/inbox", nil, q)
 			if err != nil {
@@ -51,13 +70,88 @@ func newInboxListCmd() *cobra.Command {
 			}
 			defer resp.Body.Close()
 
-			return passthroughJSON(cmd.OutOrStdout(), resp)
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return fmt.Errorf("read /inbox body: %w", err)
+			}
+			if _, err := cmd.OutOrStdout().Write(body); err != nil {
+				return err
+			}
+
+			// Hint to stderr — keeps stdout pure JSON for `| jq`.
+			// Only on success.
+			if resp.StatusCode == http.StatusOK {
+				if hint := buildInboxHint(body, all); hint != "" {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), hint)
+				}
+			}
+			return nil
 		},
 	}
 	c.Flags().StringVar(&state, "state", "", "filter by state (trusted|quarantined|rejected)")
 	c.Flags().StringVar(&since, "since", "", "ISO8601 lower bound on received_at")
 	c.Flags().IntVar(&limit, "limit", 0, "max rows (0 = server default)")
+	c.Flags().BoolVar(&all, "all", false, "include messages already marked read (default: unread only)")
+	c.Flags().BoolVar(&peek, "peek", false, "do NOT mark the returned messages as read")
 	return c
+}
+
+// inboxEnvelope is the response shape for /inbox — only the fields
+// we need for the human-friendly stderr hint.
+type inboxEnvelope struct {
+	Messages []json.RawMessage `json:"messages"`
+	Meta     *struct {
+		Showing struct {
+			State  string `json:"state"`
+			Unread bool   `json:"unread"`
+			Peek   bool   `json:"peek"`
+		} `json:"showing"`
+		Returned int `json:"returned"`
+		Counts   map[string]struct {
+			Unread int `json:"unread"`
+			Total  int `json:"total"`
+		} `json:"counts"`
+	} `json:"meta"`
+}
+
+// buildInboxHint composes a single-line summary like:
+//
+//	# 3 unread trusted shown · totals: trusted 50 (3 unread) · quarantined 5 (5 unread) · rejected 2 (0 unread) · use --all for already-read
+//
+// Returns "" if the response can't be parsed (don't pollute stderr
+// with garbage).
+func buildInboxHint(body []byte, allFlag bool) string {
+	var env inboxEnvelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		return ""
+	}
+	if env.Meta == nil {
+		return ""
+	}
+
+	showing := env.Meta.Showing
+	descriptor := showing.State
+	if showing.Unread {
+		descriptor = "unread " + descriptor
+	}
+	prefix := fmt.Sprintf("# %d %s shown", env.Meta.Returned, descriptor)
+
+	parts := []string{}
+	for _, s := range []string{"trusted", "quarantined", "rejected"} {
+		c, ok := env.Meta.Counts[s]
+		if !ok {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s %d (%d unread)", s, c.Total, c.Unread))
+	}
+	totals := strings.Join(parts, " · ")
+
+	tail := ""
+	if !allFlag {
+		tail = " · use --all for already-read"
+	}
+
+	return fmt.Sprintf("%s · totals: %s%s", prefix, totals, tail)
 }
 
 // `mmb inbox watch --json` → GET /events (SSE long-poll).
