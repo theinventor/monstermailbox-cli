@@ -21,6 +21,9 @@
 package updater
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -157,9 +160,19 @@ func LatestRelease(httpClient *http.Client) (Release, error) {
 	return rel, nil
 }
 
-// Install downloads the right binary for the current GOOS/GOARCH from
-// the given release, verifies the sha256 (must accompany every binary
-// asset as <name>.sha256), and atomically replaces the running binary.
+// Install downloads the goreleaser-produced archive for the current
+// GOOS/GOARCH from the given release, verifies its sha256 against the
+// release's `checksums.txt`, extracts the `mmb` binary from the
+// archive, and atomically replaces the running binary.
+//
+// Asset naming follows goreleaser's default `name_template`:
+//
+//	mmb_<version>_<os>_<arch>.tar.gz   (linux, darwin)
+//	mmb_<version>_<os>_<arch>.zip      (windows)
+//
+// (v0.2.0 had this wrong: it looked for `mmb-<os>-<arch>` raw binaries
+// that goreleaser doesn't produce, so `mmb update` always failed with
+// "release has no asset" even when there was one.)
 //
 // destPath is the path of the binary to replace (typically os.Executable()).
 // It must be writable by the current process — if mmb was installed
@@ -169,18 +182,17 @@ func Install(rel Release, destPath string, httpClient *http.Client) error {
 		httpClient = &http.Client{Timeout: 5 * time.Minute}
 	}
 
-	binAssetName := fmt.Sprintf("mmb-%s-%s", runtime.GOOS, runtime.GOARCH)
-	shaAssetName := binAssetName + ".sha256"
+	archiveName := goreleaserArchiveName(rel.TagName, runtime.GOOS, runtime.GOARCH)
 
-	binAsset, ok := findAsset(rel, binAssetName)
+	archiveAsset, ok := findAsset(rel, archiveName)
 	if !ok {
 		return fmt.Errorf("release %s has no asset %q (built for %s/%s)",
-			rel.TagName, binAssetName, runtime.GOOS, runtime.GOARCH)
+			rel.TagName, archiveName, runtime.GOOS, runtime.GOARCH)
 	}
-	shaAsset, ok := findAsset(rel, shaAssetName)
+	checksumAsset, ok := findAsset(rel, "checksums.txt")
 	if !ok {
-		return fmt.Errorf("release %s has no checksum file %q — refusing install without sha verification",
-			rel.TagName, shaAssetName)
+		return fmt.Errorf("release %s has no checksums.txt — refusing install without sha verification",
+			rel.TagName)
 	}
 
 	// Verify destPath writability before downloading multiple MB.
@@ -189,21 +201,19 @@ func Install(rel Release, destPath string, httpClient *http.Client) error {
 		return fmt.Errorf("cannot replace %s: %w (try `sudo mmb update` or move the binary to a user-writable location)", destPath, err)
 	}
 
-	// Download binary to a tmp file alongside destPath.
-	tmpPath := destPath + ".update.tmp"
-	if err := downloadTo(httpClient, binAsset.BrowserDownloadURL, tmpPath); err != nil {
-		return fmt.Errorf("download binary: %w", err)
+	// Download the archive to a tmp file alongside destPath.
+	archiveTmp := destPath + ".update.archive"
+	if err := downloadTo(httpClient, archiveAsset.BrowserDownloadURL, archiveTmp); err != nil {
+		return fmt.Errorf("download archive: %w", err)
 	}
-	defer os.Remove(tmpPath) // best-effort cleanup if we error before rename
+	defer os.Remove(archiveTmp)
 
-	// Download checksum file (small) into memory.
-	expectedHash, err := downloadHash(httpClient, shaAsset.BrowserDownloadURL, binAssetName)
+	// Download checksum file and verify the archive's hash.
+	expectedHash, err := downloadHash(httpClient, checksumAsset.BrowserDownloadURL, archiveName)
 	if err != nil {
 		return fmt.Errorf("download checksum: %w", err)
 	}
-
-	// Verify.
-	gotHash, err := sha256File(tmpPath)
+	gotHash, err := sha256File(archiveTmp)
 	if err != nil {
 		return fmt.Errorf("hash tmp: %w", err)
 	}
@@ -211,22 +221,131 @@ func Install(rel Release, destPath string, httpClient *http.Client) error {
 		return fmt.Errorf("sha256 mismatch (got %s, want %s) — refusing install", gotHash, expectedHash)
 	}
 
+	// Extract the mmb binary out of the archive into another tmp file.
+	binTmp := destPath + ".update.tmp"
+	if err := extractBinary(archiveTmp, "mmb", binTmp); err != nil {
+		return fmt.Errorf("extract: %w", err)
+	}
+	defer os.Remove(binTmp)
+
 	// Make executable and clear macOS quarantine attr so Gatekeeper
 	// doesn't block the first launch of the replacement binary.
-	if err := os.Chmod(tmpPath, 0o755); err != nil {
+	if err := os.Chmod(binTmp, 0o755); err != nil {
 		return fmt.Errorf("chmod: %w", err)
 	}
 	if runtime.GOOS == "darwin" {
 		// Best-effort; not all binaries get the quarantine bit. The
 		// `xattr` tool is in /usr/bin/xattr by default on macOS.
-		_ = exec.Command("xattr", "-d", "com.apple.quarantine", tmpPath).Run()
+		_ = exec.Command("xattr", "-d", "com.apple.quarantine", binTmp).Run()
 	}
 
 	// Atomic replace. On the same filesystem, os.Rename is atomic.
-	if err := os.Rename(tmpPath, destPath); err != nil {
-		return fmt.Errorf("rename %s → %s: %w", tmpPath, destPath, err)
+	if err := os.Rename(binTmp, destPath); err != nil {
+		return fmt.Errorf("rename %s → %s: %w", binTmp, destPath, err)
 	}
 	return nil
+}
+
+// goreleaserArchiveName matches the default name_template in
+// .goreleaser.yml: `mmb_{{ .Version }}_{{ .Os }}_{{ .Arch }}` plus the
+// per-OS extension. Tag names usually start with "v"; goreleaser strips
+// it when computing .Version, so we do the same here.
+func goreleaserArchiveName(tag, goos, goarch string) string {
+	version := strings.TrimPrefix(tag, "v")
+	ext := "tar.gz"
+	if goos == "windows" {
+		ext = "zip"
+	}
+	return fmt.Sprintf("mmb_%s_%s_%s.%s", version, goos, goarch, ext)
+}
+
+// extractBinary writes the named entry from a tar.gz or zip archive to
+// destPath. The matching is filepath.Base-based so it doesn't matter
+// whether goreleaser's archive layout puts the binary at the root or
+// under a versioned subdirectory.
+func extractBinary(archivePath, binName, destPath string) error {
+	if strings.HasSuffix(archivePath, ".zip") {
+		return extractFromZip(archivePath, binName, destPath)
+	}
+	return extractFromTarGz(archivePath, binName, destPath)
+}
+
+func extractFromTarGz(archivePath, binName, destPath string) error {
+	target := binName
+	if runtime.GOOS == "windows" {
+		target = binName + ".exe"
+	}
+
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("gzip: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("tar: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		if filepath.Base(hdr.Name) != target {
+			continue
+		}
+		out, err := os.Create(destPath)
+		if err != nil {
+			return err
+		}
+		// G110 false-positive: the archive is sha256-verified upstream.
+		if _, err := io.Copy(out, tr); err != nil { // nolint:gosec
+			out.Close()
+			return err
+		}
+		return out.Close()
+	}
+	return fmt.Errorf("archive %s does not contain %s", filepath.Base(archivePath), target)
+}
+
+func extractFromZip(archivePath, binName, destPath string) error {
+	target := binName + ".exe" // zip is windows-only in our setup
+	r, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	for _, zf := range r.File {
+		if filepath.Base(zf.Name) != target {
+			continue
+		}
+		rc, err := zf.Open()
+		if err != nil {
+			return err
+		}
+		out, err := os.Create(destPath)
+		if err != nil {
+			rc.Close()
+			return err
+		}
+		_, copyErr := io.Copy(out, rc) // nolint:gosec
+		rc.Close()
+		cerr := out.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return cerr
+	}
+	return fmt.Errorf("zip %s does not contain %s", filepath.Base(archivePath), target)
 }
 
 func findAsset(rel Release, name string) (Asset, bool) {
