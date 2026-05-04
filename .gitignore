@@ -1,0 +1,24 @@
+# Binaries
+mmb
+mmb.exe
+/dist/
+/build/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local env
+.env
+.env.local
+
+# Coverage
+*.out
+coverage.txt
+
+# Go workspace files (per-developer, not part of the module)
+go.work
+go.work.sum
