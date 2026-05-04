@@ -41,7 +41,12 @@ const (
 	EnvAPIURL = "MONSTERMAILBOX_API_URL"
 
 	// DefaultAPIURL is the production target. Override via EnvAPIURL.
-	DefaultAPIURL = "https://monstermailbox.com"
+	// `monstermailbox.com` is the marketing site — the API lives on the
+	// `api.` subdomain. v0.2.0 had this wrong: a fresh CLI with no profile
+	// and no MONSTERMAILBOX_API_URL set would POST /agents/register to the
+	// marketing site, get a 405 with an empty body, and the user saw "no
+	// output, no error, exit 0." See bug repro discussion in v0.2.1.
+	DefaultAPIURL = "https://api.monstermailbox.com"
 
 	// AuthScheme — Bearer per OpenAPI's bearerAuth security scheme.
 	AuthScheme = "Bearer"

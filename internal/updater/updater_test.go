@@ -1,6 +1,10 @@
 package updater
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -114,6 +118,76 @@ func TestCheckForUpdate_APIFailureIsSkipped(t *testing.T) {
 	}
 }
 
+// goreleaserArchive returns (archiveBytes, archiveSHA256) for a tar.gz
+// (or .zip on Windows) containing `mmb` (or `mmb.exe`) with the given
+// content. Mirrors what goreleaser actually uploads so tests exercise
+// the real wire format.
+func goreleaserArchive(t *testing.T, binContent []byte) ([]byte, string) {
+	t.Helper()
+	binName := "mmb"
+	if runtime.GOOS == "windows" {
+		binName = "mmb.exe"
+	}
+
+	var buf bytes.Buffer
+	if runtime.GOOS == "windows" {
+		zw := zip.NewWriter(&buf)
+		fw, err := zw.Create(binName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.Write(binContent); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		gz := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gz)
+		hdr := &tar.Header{Name: binName, Mode: 0o755, Size: int64(len(binContent)), Typeflag: tar.TypeReg}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(binContent); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := gz.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return buf.Bytes(), sha256Hex(buf.Bytes())
+}
+
+func TestGoreleaserArchiveNamePinsTheNamingConvention(t *testing.T) {
+	// v0.2.0 bug — the updater looked for `mmb-darwin-arm64` but
+	// goreleaser uploads `mmb_0.2.0_darwin_arm64.tar.gz`. Pin the
+	// pattern so a future regression can't slip through review.
+	cases := []struct {
+		tag, goos, goarch, want string
+	}{
+		{"v0.2.0", "darwin", "arm64", "mmb_0.2.0_darwin_arm64.tar.gz"},
+		{"v0.2.0", "darwin", "amd64", "mmb_0.2.0_darwin_amd64.tar.gz"},
+		{"v0.2.0", "linux", "amd64", "mmb_0.2.0_linux_amd64.tar.gz"},
+		{"v0.2.0", "linux", "arm64", "mmb_0.2.0_linux_arm64.tar.gz"},
+		{"v0.2.0", "windows", "amd64", "mmb_0.2.0_windows_amd64.zip"},
+		{"v1.10.3", "darwin", "arm64", "mmb_1.10.3_darwin_arm64.tar.gz"},
+		// Both v-prefixed and bare versions should produce the same
+		// asset name (goreleaser strips the v).
+		{"0.2.0", "linux", "amd64", "mmb_0.2.0_linux_amd64.tar.gz"},
+	}
+	for _, c := range cases {
+		got := goreleaserArchiveName(c.tag, c.goos, c.goarch)
+		if got != c.want {
+			t.Errorf("goreleaserArchiveName(%q,%q,%q) = %q, want %q",
+				c.tag, c.goos, c.goarch, got, c.want)
+		}
+	}
+}
+
 func TestInstall_VerifiesChecksumAndReplaces(t *testing.T) {
 	dir := t.TempDir()
 	dest := filepath.Join(dir, "mmb")
@@ -122,15 +196,18 @@ func TestInstall_VerifiesChecksumAndReplaces(t *testing.T) {
 	}
 
 	newBytes := []byte("NEW BINARY CONTENT")
-	hash := sha256Hex(newBytes)
-	binAssetName := fmt.Sprintf("mmb-%s-%s", runtime.GOOS, runtime.GOARCH)
+	archiveBytes, archiveHash := goreleaserArchive(t, newBytes)
+	archiveName := goreleaserArchiveName("v0.5.0", runtime.GOOS, runtime.GOARCH)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/" + binAssetName:
-			_, _ = w.Write(newBytes)
-		case "/" + binAssetName + ".sha256":
-			fmt.Fprintf(w, "%s  %s\n", hash, binAssetName)
+		case "/" + archiveName:
+			_, _ = w.Write(archiveBytes)
+		case "/checksums.txt":
+			// goreleaser format: `<hash>  <filename>\n` per line, one
+			// line per artifact in the release.
+			fmt.Fprintf(w, "%s  %s\n", archiveHash, archiveName)
+			fmt.Fprintf(w, "deadbeef  some_other_file.tar.gz\n")
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -140,8 +217,8 @@ func TestInstall_VerifiesChecksumAndReplaces(t *testing.T) {
 	rel := Release{
 		TagName: "v0.5.0",
 		Assets: []Asset{
-			{Name: binAssetName, BrowserDownloadURL: srv.URL + "/" + binAssetName},
-			{Name: binAssetName + ".sha256", BrowserDownloadURL: srv.URL + "/" + binAssetName + ".sha256"},
+			{Name: archiveName, BrowserDownloadURL: srv.URL + "/" + archiveName},
+			{Name: "checksums.txt", BrowserDownloadURL: srv.URL + "/checksums.txt"},
 		},
 	}
 	if err := Install(rel, dest, srv.Client()); err != nil {
@@ -150,7 +227,7 @@ func TestInstall_VerifiesChecksumAndReplaces(t *testing.T) {
 
 	got, _ := os.ReadFile(dest)
 	if string(got) != string(newBytes) {
-		t.Errorf("binary not replaced: %q", got)
+		t.Errorf("binary not replaced (extracted contents): %q", got)
 	}
 	st, _ := os.Stat(dest)
 	// Windows doesn't carry a POSIX executable bit — every file is
@@ -160,21 +237,76 @@ func TestInstall_VerifiesChecksumAndReplaces(t *testing.T) {
 	}
 }
 
+func TestInstall_FailsWhenChecksumsTxtMissing(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "mmb")
+	if err := os.WriteFile(dest, []byte("ORIGINAL"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archiveName := goreleaserArchiveName("v0.5.0", runtime.GOOS, runtime.GOARCH)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	// Release with the archive but no checksums.txt — must refuse.
+	rel := Release{
+		TagName: "v0.5.0",
+		Assets: []Asset{
+			{Name: archiveName, BrowserDownloadURL: srv.URL + "/x"},
+		},
+	}
+	err := Install(rel, dest, srv.Client())
+	if err == nil || !strings.Contains(err.Error(), "checksums.txt") {
+		t.Errorf("expected checksums.txt missing error, got %v", err)
+	}
+	got, _ := os.ReadFile(dest)
+	if string(got) != "ORIGINAL" {
+		t.Errorf("dest should be untouched on a refusal; got %q", got)
+	}
+}
+
+func TestInstall_FailsWhenArchiveMissingForPlatform(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "mmb")
+	_ = os.WriteFile(dest, []byte("ORIGINAL"), 0o755)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	rel := Release{
+		TagName: "v0.5.0",
+		Assets: []Asset{
+			// Old (broken) naming — should NOT be matched.
+			{Name: "mmb-" + runtime.GOOS + "-" + runtime.GOARCH, BrowserDownloadURL: srv.URL + "/x"},
+			{Name: "checksums.txt", BrowserDownloadURL: srv.URL + "/c"},
+		},
+	}
+	err := Install(rel, dest, srv.Client())
+	if err == nil || !strings.Contains(err.Error(), "no asset") {
+		t.Errorf("expected 'no asset' error when only the legacy raw-binary name is present, got %v", err)
+	}
+}
+
 func TestInstall_RejectsCorruptDownload(t *testing.T) {
 	dir := t.TempDir()
 	dest := filepath.Join(dir, "mmb")
 	if err := os.WriteFile(dest, []byte("ORIGINAL"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	binAssetName := fmt.Sprintf("mmb-%s-%s", runtime.GOOS, runtime.GOARCH)
+	archiveBytes, _ := goreleaserArchive(t, []byte("CORRUPT"))
+	archiveName := goreleaserArchiveName("v0.5.0", runtime.GOOS, runtime.GOARCH)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/bin":
-			_, _ = w.Write([]byte("CORRUPT"))
-		case "/sha":
-			// Hash claims a different content. Verify must fail.
-			fmt.Fprintf(w, "%s  %s\n", sha256Hex([]byte("DIFFERENT")), binAssetName)
+		case "/archive":
+			_, _ = w.Write(archiveBytes)
+		case "/checksums.txt":
+			// Claims a different content. Verify must fail.
+			fmt.Fprintf(w, "%s  %s\n", sha256Hex([]byte("DIFFERENT")), archiveName)
 		}
 	}))
 	defer srv.Close()
@@ -182,8 +314,8 @@ func TestInstall_RejectsCorruptDownload(t *testing.T) {
 	rel := Release{
 		TagName: "v0.5.0",
 		Assets: []Asset{
-			{Name: binAssetName, BrowserDownloadURL: srv.URL + "/bin"},
-			{Name: binAssetName + ".sha256", BrowserDownloadURL: srv.URL + "/sha"},
+			{Name: archiveName, BrowserDownloadURL: srv.URL + "/archive"},
+			{Name: "checksums.txt", BrowserDownloadURL: srv.URL + "/checksums.txt"},
 		},
 	}
 	err := Install(rel, dest, srv.Client())
@@ -194,6 +326,56 @@ func TestInstall_RejectsCorruptDownload(t *testing.T) {
 	got, _ := os.ReadFile(dest)
 	if string(got) != "ORIGINAL" {
 		t.Errorf("destination corrupted on failed install: %q", got)
+	}
+}
+
+func TestInstall_FailsWhenArchiveDoesNotContainBinary(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "mmb")
+	_ = os.WriteFile(dest, []byte("ORIGINAL"), 0o755)
+
+	// Build an archive with the WRONG entry name so extraction fails.
+	var buf bytes.Buffer
+	if runtime.GOOS == "windows" {
+		zw := zip.NewWriter(&buf)
+		fw, _ := zw.Create("not-mmb.exe")
+		_, _ = fw.Write([]byte("x"))
+		_ = zw.Close()
+	} else {
+		gz := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gz)
+		_ = tw.WriteHeader(&tar.Header{Name: "not-mmb", Mode: 0o755, Size: 1, Typeflag: tar.TypeReg})
+		_, _ = tw.Write([]byte("x"))
+		_ = tw.Close()
+		_ = gz.Close()
+	}
+	bogusArchive := buf.Bytes()
+	archiveName := goreleaserArchiveName("v0.5.0", runtime.GOOS, runtime.GOARCH)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/" + archiveName:
+			_, _ = w.Write(bogusArchive)
+		case "/checksums.txt":
+			fmt.Fprintf(w, "%s  %s\n", sha256Hex(bogusArchive), archiveName)
+		}
+	}))
+	defer srv.Close()
+
+	rel := Release{
+		TagName: "v0.5.0",
+		Assets: []Asset{
+			{Name: archiveName, BrowserDownloadURL: srv.URL + "/" + archiveName},
+			{Name: "checksums.txt", BrowserDownloadURL: srv.URL + "/checksums.txt"},
+		},
+	}
+	err := Install(rel, dest, srv.Client())
+	if err == nil || !strings.Contains(err.Error(), "does not contain") {
+		t.Errorf("expected extract error when archive lacks mmb binary, got %v", err)
+	}
+	got, _ := os.ReadFile(dest)
+	if string(got) != "ORIGINAL" {
+		t.Errorf("dest must be untouched on extract failure; got %q", got)
 	}
 }
 
