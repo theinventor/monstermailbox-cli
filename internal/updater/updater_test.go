@@ -153,7 +153,9 @@ func TestInstall_VerifiesChecksumAndReplaces(t *testing.T) {
 		t.Errorf("binary not replaced: %q", got)
 	}
 	st, _ := os.Stat(dest)
-	if st.Mode().Perm()&0o111 == 0 {
+	// Windows doesn't carry a POSIX executable bit — every file is
+	// "executable" if its name ends in .exe. Skip the bit check there.
+	if runtime.GOOS != "windows" && st.Mode().Perm()&0o111 == 0 {
 		t.Errorf("replaced binary not executable: %o", st.Mode().Perm())
 	}
 }

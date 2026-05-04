@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -57,12 +58,17 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 
 	// Mode must be 0600 (readable only by owner; key is sensitive).
+	// Windows doesn't honor POSIX permission bits — files come back
+	// as 0666 regardless of how they were written. The on-disk ACL
+	// model is different there; skip the bit-level assert.
 	st, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode := st.Mode().Perm(); mode != 0o600 {
-		t.Errorf("file mode = %o, want 0600", mode)
+	if runtime.GOOS != "windows" {
+		if mode := st.Mode().Perm(); mode != 0o600 {
+			t.Errorf("file mode = %o, want 0600", mode)
+		}
 	}
 
 	// Reload and compare.
