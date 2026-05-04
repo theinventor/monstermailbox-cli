@@ -201,8 +201,14 @@ func Install(rel Release, destPath string, httpClient *http.Client) error {
 		return fmt.Errorf("cannot replace %s: %w (try `sudo mmb update` or move the binary to a user-writable location)", destPath, err)
 	}
 
-	// Download the archive to a tmp file alongside destPath.
-	archiveTmp := destPath + ".update.archive"
+	// Download the archive to a tmp file alongside destPath. Preserve
+	// the goreleaser extension (.tar.gz / .zip) on the tmp name so the
+	// extractor can dispatch on it without a separate format hint.
+	ext := ".tar.gz"
+	if runtime.GOOS == "windows" {
+		ext = ".zip"
+	}
+	archiveTmp := destPath + ".update.archive" + ext
 	if err := downloadTo(httpClient, archiveAsset.BrowserDownloadURL, archiveTmp); err != nil {
 		return fmt.Errorf("download archive: %w", err)
 	}
