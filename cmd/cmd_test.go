@@ -64,7 +64,12 @@ func runCmd(t *testing.T, argv []string, respStatus int, respBody string) (strin
 
 // runCmdSplit is like runCmd but keeps stdout / stderr in separate
 // buffers so tests can assert hints land where they should.
-func runCmdSplit(t *testing.T, argv []string, respStatus int, respBody string) (string, string, *captured) {
+//
+// Mirrors main.go's behavior on error: cobra has SilenceErrors=true,
+// so when Execute() returns an error main.go prints "mmb: <err>" to
+// stderr and exits 1. Tests want to see that final message, so this
+// helper writes it to the captured stderr buffer the same way.
+func runCmdSplit(t *testing.T, argv []string, respStatus int, respBody string) (string, string, *captured, error) {
 	t.Helper()
 
 	cap := &captured{}
@@ -93,8 +98,47 @@ func runCmdSplit(t *testing.T, argv []string, respStatus int, respBody string) (
 	root.SetErr(stderr)
 	root.SetArgs(argv)
 
-	_ = root.Execute()
-	return stdout.String(), stderr.String(), cap
+	err := root.Execute()
+	if err != nil {
+		// Match main.go's user-facing rendering so tests can assert on it.
+		_, _ = stderr.WriteString("mmb: " + err.Error() + "\n")
+	}
+	return stdout.String(), stderr.String(), cap, err
+}
+
+// ── client / non-2xx surfacing ─────────────────────────────────
+
+func TestNon2xxReturnsErrorWithStatus(t *testing.T) {
+	// 422 with a JSON body — the body should still print, AND the
+	// command must exit non-zero so the agent can branch on it.
+	stdout, _, _, err := runCmdSplit(t, []string{"register", "--address", "x", "--email", "y@z.com"},
+		422, `{"error":"validation_failed"}`)
+	if err == nil {
+		t.Errorf("non-2xx MUST surface an error so cobra exits non-zero; got nil")
+	}
+	if !strings.Contains(stdout, "validation_failed") {
+		t.Errorf("body must still print so the user sees the server's reason; stdout=%q", stdout)
+	}
+}
+
+func TestEmpty4xxReturnsHelpfulErrorWithURL(t *testing.T) {
+	// This is the v0.2.0 register-bug scenario: 405 with empty body.
+	// Without this fix the user saw nothing on stdout, nothing on
+	// stderr, exit 0. The fix returns an error that names the URL
+	// so wrong-host configs are obvious.
+	_, stderr, _, err := runCmdSplit(t, []string{"register", "--address", "x", "--email", "y@z.com"},
+		405, ``)
+	if err == nil {
+		t.Errorf("empty 4xx MUST surface an error; got nil. stderr=%q", stderr)
+	}
+	// The error message rendered by cobra includes "HTTP 405" and
+	// the URL hint. cobra prints to stderr by default.
+	if !strings.Contains(stderr, "HTTP 405") {
+		t.Errorf("error MUST name the status; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "check") || !strings.Contains(stderr, "API URL") {
+		t.Errorf("error MUST hint at API URL when body is empty; stderr=%q", stderr)
+	}
 }
 
 // ── whoami ─────────────────────────────────────────────────────
@@ -188,7 +232,7 @@ func TestInboxListEmitsHintToStderrAndKeepsStdoutClean(t *testing.T) {
         }
       }
     }`
-	stdout, stderr, _ := runCmdSplit(t, []string{"inbox", "list"}, 200, respBody)
+	stdout, stderr, _, _ := runCmdSplit(t, []string{"inbox", "list"}, 200, respBody)
 	if !strings.Contains(stderr, "2 unread trusted shown") {
 		t.Errorf("hint should describe the page; stderr=%q", stderr)
 	}
@@ -216,7 +260,7 @@ func TestInboxListAllFlagSuppressesAllHint(t *testing.T) {
         "counts": {"trusted":{"unread":0,"total":1},"quarantined":{"unread":0,"total":0},"rejected":{"unread":0,"total":0}}
       }
     }`
-	_, stderr, _ := runCmdSplit(t, []string{"inbox", "list", "--all"}, 200, respBody)
+	_, stderr, _, _ := runCmdSplit(t, []string{"inbox", "list", "--all"}, 200, respBody)
 	if strings.Contains(stderr, "use --all") {
 		t.Errorf("--all should suppress the use-all hint; stderr=%q", stderr)
 	}

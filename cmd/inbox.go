@@ -182,17 +182,44 @@ func newInboxWatchCmd() *cobra.Command {
 // passthroughJSON pretty-prints a JSON-ish response body. If the
 // body isn't JSON it's written through verbatim — useful for error
 // responses the server returns as text.
+//
+// Non-2xx responses return a non-nil error so cobra surfaces them
+// to the user with a non-zero exit. Without this, an empty 4xx body
+// (e.g. 405 with content-length: 0, which is what the old marketing-
+// host default URL produced) printed nothing AND exited 0 — the
+// user thought their command silently succeeded. The body, when
+// non-empty, is still written so JSON error envelopes from the
+// server are visible.
 func passthroughJSON(w io.Writer, resp *http.Response) error {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
-	var pretty any
-	if err := json.Unmarshal(body, &pretty); err != nil {
-		_, werr := w.Write(body)
-		return werr
+
+	if len(body) > 0 {
+		var pretty any
+		if err := json.Unmarshal(body, &pretty); err != nil {
+			if _, werr := w.Write(body); werr != nil {
+				return werr
+			}
+		} else {
+			enc := json.NewEncoder(w)
+			enc.SetIndent("", "  ")
+			if werr := enc.Encode(pretty); werr != nil {
+				return werr
+			}
+		}
 	}
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(pretty)
+
+	if resp.StatusCode >= 400 {
+		hint := ""
+		if len(body) == 0 {
+			// Empty 4xx/5xx is almost always wrong-host or wrong-path.
+			// Surface the URL so the user can see immediately if they're
+			// hitting the marketing site, a stale dev URL, etc.
+			hint = fmt.Sprintf(" (empty body — check %s is the right API URL)", resp.Request.URL.String())
+		}
+		return fmt.Errorf("HTTP %d %s%s", resp.StatusCode, http.StatusText(resp.StatusCode), hint)
+	}
+	return nil
 }
