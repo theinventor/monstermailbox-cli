@@ -84,8 +84,18 @@ func newInboxListCmd() *cobra.Command {
 				if hint := buildInboxHint(body, all); hint != "" {
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), hint)
 				}
+				return nil
 			}
-			return nil
+
+			// Non-2xx: surface the status so the agent sees the failure.
+			// (The same invariant `passthroughJSON` enforces — restated
+			// here because `inbox list` reads the body itself for the
+			// hint logic.) See the v0.2.0 silent-register bug for why.
+			hint := ""
+			if len(body) == 0 {
+				hint = fmt.Sprintf(" (empty body — check %s is the right API URL)", resp.Request.URL.String())
+			}
+			return fmt.Errorf("HTTP %d %s%s", resp.StatusCode, http.StatusText(resp.StatusCode), hint)
 		},
 	}
 	c.Flags().StringVar(&state, "state", "", "filter by state (trusted|quarantined|rejected)")

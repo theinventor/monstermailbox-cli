@@ -450,6 +450,162 @@ func TestQuarantineEscalateReturnsExplicitNotImplemented(t *testing.T) {
 	}
 }
 
+// ── No-silent-failure invariant ────────────────────────────────
+//
+// The class of bug we never want to ship again: a CLI invocation
+// that should produce visible output instead produces nothing —
+// empty stdout, empty stderr, exit 0. Discovered in v0.2.0 when
+// `mmb register` against the marketing host returned 405 with an
+// empty body and the user thought their command silently succeeded.
+//
+// Every API-hitting command MUST, when the server returns an empty
+// 4xx, surface an error to the user (non-zero exit + non-empty
+// stderr). The table below is the full set of API-hitting commands
+// with minimum-viable args; if you add a new API command, add a row
+// here too. Adding a row that breaks this invariant is the canary —
+// don't make the test pass by deleting the row, fix the command's
+// error handling.
+
+func TestEveryAPICommandSurfacesEmpty4xxAsAVisibleError(t *testing.T) {
+	cases := []struct {
+		name string
+		argv []string
+	}{
+		{"inbox_list", []string{"inbox", "list"}},
+		{"msg_show", []string{"msg", "show", "abc"}},
+		{"expect", []string{"expect", "--from", "ceo@x.com", "--subject", "wire"}},
+		{"whitelist_add", []string{"whitelist", "add", "alice@x.com"}},
+		{"send", []string{"send", "--to", "x@y.com", "--subject", "s", "--body", "b"}},
+		{"new_email", []string{"new-email", "--to", "x@y.com", "--subject", "s", "--body", "b"}},
+		{"reply_to_email", []string{"reply-to-email", "--to-message-id", "1", "--body", "b"}},
+		{"quarantine_list", []string{"quarantine", "list"}},
+		{"register", []string{"register", "--address", "x", "--email", "y@z.com"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, stderr, _, err := runCmdSplit(t, tc.argv, 405, ``)
+			if err == nil {
+				t.Errorf("%s: empty 4xx MUST return a non-nil error so cobra exits non-zero", tc.name)
+			}
+			if !strings.Contains(stderr, "HTTP 405") {
+				t.Errorf("%s: stderr MUST surface the status; got %q", tc.name, stderr)
+			}
+			if !strings.Contains(stderr, "API URL") {
+				t.Errorf("%s: stderr MUST hint at the URL when body is empty; got %q", tc.name, stderr)
+			}
+		})
+	}
+}
+
+// `whoami` is the diagnostic command — its whole job is to expose
+// the API URL, the loaded key fingerprint, and the server's response.
+// On a non-2xx, it shows `server_status` in the JSON output so the
+// user can see exactly what went wrong without the command erroring
+// out (which would obscure the diagnostic info in many shells). Pin
+// that special-case so a future refactor doesn't accidentally make
+// whoami exit non-zero on a server problem.
+func TestWhoamiShowsServerStatusOnNon2xxRatherThanErroring(t *testing.T) {
+	stdout, _, _, err := runCmdSplit(t, []string{"whoami"}, 405, ``)
+	if err != nil {
+		t.Errorf("whoami MUST stay quiet on non-2xx — it's the diagnostic surface; got err=%v", err)
+	}
+	if !strings.Contains(stdout, `"server_status": 405`) {
+		t.Errorf("whoami MUST surface server_status in stdout JSON; got %q", stdout)
+	}
+}
+
+// Companion to the table above: when the server DOES return a body
+// on a non-2xx (e.g. a JSON validation error), the body must still
+// reach stdout AND the error must still surface so the agent can
+// branch on exit code. Body without exit-code = invisible failure
+// in pipelines; exit-code without body = useless ("what was wrong?").
+func TestEveryAPICommandPrintsBodyAndStillErrorsOnNon2xx(t *testing.T) {
+	cases := []struct {
+		name string
+		argv []string
+	}{
+		{"inbox_list", []string{"inbox", "list"}},
+		{"msg_show", []string{"msg", "show", "abc"}},
+		{"register", []string{"register", "--address", "x", "--email", "y@z.com"}},
+	}
+	body := `{"error":"validation_failed","message":"this field is required"}`
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, _, _, err := runCmdSplit(t, tc.argv, 422, body)
+			if err == nil {
+				t.Errorf("%s: 422 MUST surface an error; got nil", tc.name)
+			}
+			if !strings.Contains(stdout, "validation_failed") {
+				t.Errorf("%s: server's error body MUST print to stdout so the user sees it; got %q",
+					tc.name, stdout)
+			}
+		})
+	}
+}
+
+// Pin the exact decision matrix in passthroughJSON so a refactor
+// can't quietly swap the boundary. Writes a tiny dummy command to
+// drive the helper directly; we don't want this test coupled to
+// any specific API command's flag plumbing.
+func TestPassthroughJSONStatusCodeClassification(t *testing.T) {
+	cases := []struct {
+		status      int
+		body        string
+		wantErr     bool
+		wantStdout  string // substring expected on stdout (or "" for "any")
+	}{
+		// 2xx — success path. Body prints; no error.
+		{200, `{"ok":true}`, false, `"ok": true`},
+		{201, `{"id":"x"}`, false, `"id": "x"`},
+		{202, `{"queued":true}`, false, "queued"},
+		{204, ``, false, ""}, // No content; no error, no panic.
+
+		// 4xx — error path. Body prints if present; error returned.
+		{400, `{"error":"bad_request"}`, true, "bad_request"},
+		{401, `{"error":"unauthorized"}`, true, "unauthorized"},
+		{403, `{"error":"forbidden"}`, true, "forbidden"},
+		{404, `{"error":"not_found"}`, true, "not_found"},
+		{405, ``, true, ""},                        // The v0.2.0 bug shape.
+		{409, `{"error":"conflict"}`, true, "conflict"},
+		{422, `{"error":"validation_failed"}`, true, "validation_failed"},
+
+		// 5xx — server problem. Treated the same as 4xx.
+		{500, ``, true, ""},
+		{500, `<html>oops</html>`, true, "oops"}, // non-JSON body still passes through.
+		{502, `bad gateway`, true, "bad gateway"},
+		{503, `{"error":"down"}`, true, "down"},
+	}
+	for _, tc := range cases {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL)
+			if err != nil {
+				t.Fatalf("client GET: %v", err)
+			}
+			defer resp.Body.Close()
+
+			out := &bytes.Buffer{}
+			gotErr := passthroughJSON(out, resp)
+
+			if tc.wantErr && gotErr == nil {
+				t.Errorf("status %d MUST yield an error; got nil. stdout=%q", tc.status, out.String())
+			}
+			if !tc.wantErr && gotErr != nil {
+				t.Errorf("status %d MUST NOT yield an error; got %v", tc.status, gotErr)
+			}
+			if tc.wantStdout != "" && !strings.Contains(out.String(), tc.wantStdout) {
+				t.Errorf("status %d: stdout MUST contain %q; got %q", tc.status, tc.wantStdout, out.String())
+			}
+		})
+	}
+}
+
 // ── Auth header is set on every authenticated request ─────────
 
 func TestAuthHeaderIsSetOnAuthenticatedRequests(t *testing.T) {

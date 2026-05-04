@@ -112,7 +112,15 @@ func fetchOriginalMessage(cli *client.Client, id string) (*originalMessage, erro
 	}
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("GET /msg/%s: %s: %s", id, resp.Status, strings.TrimSpace(string(raw)))
+		hint := strings.TrimSpace(string(raw))
+		if hint == "" {
+			// Empty 4xx/5xx → almost always wrong-host. Surface the URL
+			// so the user/agent can spot a misconfigured profile or env
+			// var. Same invariant `passthroughJSON` enforces; restated
+			// here because reply-to-email handles the response itself.
+			hint = fmt.Sprintf("(empty body — check %s is the right API URL)", resp.Request.URL.String())
+		}
+		return nil, fmt.Errorf("HTTP %d %s: %s", resp.StatusCode, http.StatusText(resp.StatusCode), hint)
 	}
 
 	var parsed originalMessage
