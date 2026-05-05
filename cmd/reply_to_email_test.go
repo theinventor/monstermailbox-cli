@@ -270,12 +270,16 @@ func TestReplyToEmail403SurfacesNoSuchMessage(t *testing.T) {
 }
 
 func TestReplyToEmailRequiresMessageIdAndBody(t *testing.T) {
-	routes := map[string]routedResponse{}
+	routes := map[string]routedResponse{
+		// stub the GET so we exercise the flag-validation path BEFORE
+		// the network call short-circuits us
+		"GET /msg/123": {status: 200, body: `{"id":"123","from":{"email":"x@y"}}`},
+	}
 	_, _, _, err := runReplyCmd(t,
 		[]string{"reply-to-email", "--to-message-id", "123"},
 		routes)
 	if err == nil {
-		t.Errorf("reply-to-email without --body MUST return an error")
+		t.Errorf("reply-to-email without any body source MUST return an error")
 	}
 
 	_, _, _, err = runReplyCmd(t,
@@ -283,5 +287,136 @@ func TestReplyToEmailRequiresMessageIdAndBody(t *testing.T) {
 		routes)
 	if err == nil {
 		t.Errorf("reply-to-email without --to-message-id MUST return an error")
+	}
+}
+
+// HTML reply: the auto-quote uses <blockquote> instead of "> ".
+// When the inbound has body_html, the quote includes it verbatim
+// (server already sanitized).
+func TestReplyToEmailHTMLQuotesWithBlockquote(t *testing.T) {
+	routes := map[string]routedResponse{
+		"GET /msg/9": {
+			status: 200,
+			body: `{"id":"9","from":{"email":"sender@example.com","display_name":"Sender"},
+			        "subject":"topic","body_text":"hello","body_html":"<p>hello</p>",
+			        "received_at":"2026-05-05T12:34:56Z"}`,
+		},
+		"POST /send": {status: 202, body: `{"outbound_id":"o_1","status":"enqueued"}`},
+	}
+	_, _, cap, err := runReplyCmd(t,
+		[]string{"reply-to-email", "--to-message-id", "9", "--body-html", "<p>thanks</p>"},
+		routes)
+	if err != nil {
+		t.Fatalf("reply-to-email --body-html: %v", err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(cap.body, &body)
+
+	html, _ := body["body_html"].(string)
+	if !strings.Contains(html, "<p>thanks</p>") {
+		t.Errorf("body_html MUST start with the user's HTML body; got %q", html)
+	}
+	if !strings.Contains(html, "<blockquote") {
+		t.Errorf("body_html MUST quote with <blockquote>; got %q", html)
+	}
+	if !strings.Contains(html, "<p>hello</p>") {
+		t.Errorf("blockquote MUST contain the original body_html; got %q", html)
+	}
+	// Plain-text shape: no body_text was supplied, server will derive.
+	if _, ok := body["body_text"]; ok {
+		t.Errorf("HTML-only reply MUST NOT include body_text; got %v", body["body_text"])
+	}
+}
+
+// When the inbound message has only body_text (pre-rollout), the HTML
+// reply still produces a quoted block — by escaping the text body
+// into the <blockquote>. Round-trip safety: an inbound message with
+// `<script>` text content must not become an injection vector in the
+// outbound HTML.
+func TestReplyToEmailHTMLEscapesPlainTextOriginalIntoBlockquote(t *testing.T) {
+	routes := map[string]routedResponse{
+		"GET /msg/9": {
+			status: 200,
+			body: `{"id":"9","from":{"email":"sender@example.com"},
+			        "subject":"topic","body_text":"hi <script>alert(1)</script>",
+			        "received_at":"2026-05-05T12:34:56Z"}`,
+		},
+		"POST /send": {status: 202, body: `{"outbound_id":"o_1","status":"enqueued"}`},
+	}
+	_, _, cap, err := runReplyCmd(t,
+		[]string{"reply-to-email", "--to-message-id", "9", "--body-html", "<p>thanks</p>"},
+		routes)
+	if err != nil {
+		t.Fatalf("reply-to-email: %v", err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(cap.body, &body)
+	html, _ := body["body_html"].(string)
+	if strings.Contains(html, "<script>alert(1)</script>") {
+		t.Errorf("plain-text-only original MUST be HTML-escaped into the blockquote; got %q", html)
+	}
+	if !strings.Contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;") {
+		t.Errorf("escaped form MUST be present; got %q", html)
+	}
+}
+
+// Both bodies: both quote separately — HTML uses <blockquote>, text uses "> ".
+// The two outbound payloads stay in sync (multipart/alternative rendering parity).
+func TestReplyToEmailBothBodiesQuoteBoth(t *testing.T) {
+	routes := map[string]routedResponse{
+		"GET /msg/9": {
+			status: 200,
+			body: `{"id":"9","from":{"email":"sender@example.com"},
+			        "subject":"topic","body_text":"hi","body_html":"<p>hi</p>",
+			        "received_at":"2026-05-05T12:34:56Z"}`,
+		},
+		"POST /send": {status: 202, body: `{"outbound_id":"o_1","status":"enqueued"}`},
+	}
+	_, _, cap, err := runReplyCmd(t,
+		[]string{"reply-to-email", "--to-message-id", "9",
+			"--body", "thanks", "--body-html", "<p>thanks</p>"},
+		routes)
+	if err != nil {
+		t.Fatalf("reply-to-email: %v", err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(cap.body, &body)
+
+	text, _ := body["body_text"].(string)
+	if !strings.HasPrefix(text, "thanks") || !strings.Contains(text, "> hi") {
+		t.Errorf("plain-text MUST start with --body and include '> ' quoted original; got %q", text)
+	}
+	html, _ := body["body_html"].(string)
+	if !strings.Contains(html, "<p>thanks</p>") || !strings.Contains(html, "<blockquote") {
+		t.Errorf("HTML MUST start with --body-html and include <blockquote>; got %q", html)
+	}
+}
+
+// --no-quote MUST suppress quoting in BOTH bodies when both are present.
+func TestReplyToEmailNoQuoteSuppressesBothFormats(t *testing.T) {
+	routes := map[string]routedResponse{
+		"GET /msg/9": {
+			status: 200,
+			body: `{"id":"9","from":{"email":"sender@example.com"},
+			        "subject":"topic","body_text":"hi","body_html":"<p>hi</p>",
+			        "received_at":"2026-05-05T12:34:56Z"}`,
+		},
+		"POST /send": {status: 202, body: `{"outbound_id":"o_1","status":"enqueued"}`},
+	}
+	_, _, cap, err := runReplyCmd(t,
+		[]string{"reply-to-email", "--to-message-id", "9", "--no-quote",
+			"--body", "thanks", "--body-html", "<p>thanks</p>"},
+		routes)
+	if err != nil {
+		t.Fatalf("reply-to-email --no-quote: %v", err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(cap.body, &body)
+
+	if body["body_text"] != "thanks" {
+		t.Errorf("--no-quote MUST suppress text quote; got %v", body["body_text"])
+	}
+	if body["body_html"] != "<p>thanks</p>" {
+		t.Errorf("--no-quote MUST suppress html quote; got %v", body["body_html"])
 	}
 }

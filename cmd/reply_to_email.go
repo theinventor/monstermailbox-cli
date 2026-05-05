@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"strings"
@@ -13,17 +14,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// `mmb reply-to-email --to-message-id <id> --body <s> [--cc] [--bcc] [--subject-override <s>]` → POST /send.
+// `mmb reply-to-email --to-message-id <id> --body <s>` → POST /send.
 //
 // Threading is automatic and not opt-out: the CLI fetches the original
 // inbound message, derives the recipient + Re:-prefixed subject, then
 // POSTs to /send with `in_reply_to_message_id` set so the backend can
 // stitch RFC In-Reply-To / References headers on the outbound MIME.
+//
+// Body forms (at least one required) match `mmb new-email`:
+// --body / --body-html / --body-file / --body-html-file. When HTML is
+// present the auto-quoted block uses <blockquote>; when only plain
+// text is present the quote is Gmail-style "> " prefixed. With both,
+// both are quoted so the multipart alternatives stay in sync.
 func newReplyToEmailCmd() *cobra.Command {
-	var toMessageID, body, subjectOverride string
+	var toMessageID, subjectOverride string
 	var cc, bcc []string
 	var noQuote bool
 	var mf mutationFlags
+	var bf bodyFlags
 	c := &cobra.Command{
 		Use:   "reply-to-email",
 		Short: "Reply to an inbound message (threading is automatic)",
@@ -31,14 +39,22 @@ func newReplyToEmailCmd() *cobra.Command {
 the original, derives the recipient + Re:-prefixed subject, sets
 in_reply_to_message_id so the backend stitches RFC In-Reply-To /
 References headers on the outbound MIME, AND quotes the original
-message body Gmail-style ("On <date>, <sender> wrote:\n> ...") so
-the recipient sees context the way every email client renders it.
+message body Gmail-style so the recipient sees context the way every
+email client renders it.
+
+Plain-text replies quote with "> " prefixed lines.
+HTML replies quote with a <blockquote> block.
+With both bodies, both are quoted (multipart alternatives stay in sync).
 
 Pass --no-quote to send a clean body with no quoted history.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if toMessageID == "" || body == "" {
+			if toMessageID == "" {
 				return exitcode.Wrap(exitcode.Usage,
-					fmt.Errorf("--to-message-id and --body are both required"))
+					fmt.Errorf("--to-message-id is required"))
+			}
+			text, htmlBody, err := bf.resolve()
+			if err != nil {
+				return err
 			}
 
 			cli := client.New()
@@ -52,16 +68,27 @@ Pass --no-quote to send a clean body with no quoted history.`,
 				subject = derivedReplySubject(orig.Subject)
 			}
 
-			outBody := body
+			outText := text
+			outHTML := htmlBody
 			if !noQuote {
-				outBody = body + "\n\n" + quoteOriginal(orig)
+				if outText != "" {
+					outText = outText + "\n\n" + quoteOriginal(orig)
+				}
+				if outHTML != "" {
+					outHTML = outHTML + "\n" + quoteOriginalHTML(orig)
+				}
 			}
 
 			payload := map[string]any{
 				"to":                     orig.From.Email,
 				"subject":                subject,
-				"body_text":              outBody,
 				"in_reply_to_message_id": toMessageID,
+			}
+			if outText != "" {
+				payload["body_text"] = outText
+			}
+			if outHTML != "" {
+				payload["body_html"] = outHTML
 			}
 			if len(cc) > 0 {
 				payload["cc"] = cc
@@ -84,11 +111,11 @@ Pass --no-quote to send a clean body with no quoted history.`,
 		},
 	}
 	c.Flags().StringVar(&toMessageID, "to-message-id", "", "id of the inbound Message to reply to — required")
-	c.Flags().StringVar(&body, "body", "", "plain-text body — required")
 	c.Flags().StringVar(&subjectOverride, "subject-override", "", "replace the derived 'Re: <orig>' subject (rare)")
 	c.Flags().StringSliceVar(&cc, "cc", nil, "cc recipients (comma-separated or repeat the flag)")
 	c.Flags().StringSliceVar(&bcc, "bcc", nil, "bcc recipients (comma-separated or repeat the flag)")
 	c.Flags().BoolVar(&noQuote, "no-quote", false, "send body alone without quoting the original message")
+	bindBodyFlags(c, &bf)
 	bindMutationFlags(c, &mf)
 	return c
 }
@@ -96,6 +123,11 @@ Pass --no-quote to send a clean body with no quoted history.`,
 // originalMessage is the projection of GET /msg/:id that the reply
 // command needs: enough fields to build the To, the subject, AND the
 // quoted-original block.
+//
+// `body_html` is read for the HTML-quote path. When the inbound
+// schema doesn't (yet) carry it, the field stays empty and the HTML
+// quote falls back to escaping `body_text` into a <blockquote>. See
+// TODO.md for the inbound HTML rollout.
 type originalMessage struct {
 	From struct {
 		Email       string `json:"email"`
@@ -103,6 +135,7 @@ type originalMessage struct {
 	} `json:"from"`
 	Subject    string `json:"subject"`
 	BodyText   string `json:"body_text"`
+	BodyHTML   string `json:"body_html"`
 	ReceivedAt string `json:"received_at"`
 }
 
@@ -200,4 +233,62 @@ func derivedReplySubject(orig string) string {
 		return orig
 	}
 	return "Re: " + orig
+}
+
+// quoteOriginalHTML wraps the original body in a <blockquote> with an
+// attribution line — the HTML analogue of `quoteOriginal`. The server
+// sanitizes both inbound HTML (eventually) and outbound HTML before
+// shipping to Postmark, so the CLI does NOT re-sanitize: it passes
+// through the server's sanitized body_html, or HTML-escapes body_text
+// as a safe fallback when no body_html is available.
+//
+// Output shape (Gmail-compatible):
+//
+//	<div>On Mon, May 5, 2026 at 1:34 PM, Sender &lt;a@b.com&gt; wrote:</div>
+//	<blockquote style="margin:0 0 0 0.8ex; border-left:1px solid #ccc; padding-left:1ex;">
+//	  ...original body...
+//	</blockquote>
+//
+// Empty input → empty string (no useless attribution). Same contract
+// as quoteOriginal so callers can compose `body + "\n" + quote(orig)`
+// without nil-checking.
+func quoteOriginalHTML(orig *originalMessage) string {
+	source := strings.TrimRight(orig.BodyHTML, "\n")
+	if source == "" {
+		// No HTML version on the inbound — escape the plain text and
+		// preserve newlines. This keeps the HTML reply visually correct
+		// even when the inbound was text-only or pre-rollout.
+		text := strings.TrimRight(orig.BodyText, "\n")
+		if text == "" {
+			return ""
+		}
+		escaped := html.EscapeString(text)
+		escaped = strings.ReplaceAll(escaped, "\n", "<br>\n")
+		source = escaped
+	}
+
+	var datePart string
+	if t, err := time.Parse(time.RFC3339, orig.ReceivedAt); err == nil {
+		datePart = t.Local().Format("Mon, Jan 2, 2006 at 3:04 PM")
+	}
+
+	senderText := orig.From.DisplayName
+	if senderText == "" {
+		senderText = orig.From.Email
+	} else {
+		senderText = fmt.Sprintf("%s <%s>", senderText, orig.From.Email)
+	}
+	senderHTML := html.EscapeString(senderText)
+
+	var attribution string
+	if datePart != "" {
+		attribution = fmt.Sprintf("<div>On %s, %s wrote:</div>",
+			html.EscapeString(datePart), senderHTML)
+	} else {
+		attribution = fmt.Sprintf("<div>%s wrote:</div>", senderHTML)
+	}
+
+	return attribution +
+		`<blockquote style="margin:0 0 0 0.8ex; border-left:1px solid #ccc; padding-left:1ex;">` +
+		"\n" + source + "\n</blockquote>"
 }
