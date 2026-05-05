@@ -10,11 +10,15 @@ import (
 	"os"
 
 	"github.com/theinventor/monstermailbox-cli/cmd"
+	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 )
 
 func main() {
 	if err := cmd.NewRootCmd().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "mmb:", err)
-		os.Exit(1)
+		// Exit code is derived from any *exitcode.Error in the error chain;
+		// otherwise falls back to 1 (Generic). The taxonomy is documented
+		// in internal/exitcode and surfaced via `mmb agent-context`.
+		os.Exit(exitcode.ExitCodeFor(err))
 	}
 }

@@ -198,6 +198,72 @@ func TestAuthLogin_RegistersAndSavesProfile(t *testing.T) {
 	}
 }
 
+// `mmb auth list` is JSON-by-default (principle 2 — agent-first).
+// The legacy table layout is still available behind --human.
+func TestAuthList_JSONByDefault(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("MMB_CONFIG", cfg)
+
+	f := &config.File{}
+	f.Put("alpha", config.Profile{
+		APIURL:       "https://alpha.example.com",
+		APIKey:       "PROFILE_ALPHA_KEY",
+		AgentAddress: "alpha@example.com",
+	})
+	if err := f.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := runMmbCmd(t, []string{"auth", "list"}, nil)
+	if err != nil {
+		t.Fatalf("auth list: %v", err)
+	}
+	// stdout MUST be valid JSON, not a human table.
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+		t.Fatalf("auth list MUST emit JSON by default; parse err=%v stdout=%q", err, stdout)
+	}
+	if parsed["default_profile"] != "alpha" {
+		t.Errorf("default_profile in JSON = %v; want alpha", parsed["default_profile"])
+	}
+	profiles, ok := parsed["profiles"].([]any)
+	if !ok || len(profiles) != 1 {
+		t.Fatalf("profiles must be an array of length 1; got %v", parsed["profiles"])
+	}
+	first, _ := profiles[0].(map[string]any)
+	if first["name"] != "alpha" {
+		t.Errorf("first profile name = %v; want alpha", first["name"])
+	}
+	// JSON output MUST mask the api_key, never expose it raw.
+	if got, _ := first["api_key"].(string); got == "PROFILE_ALPHA_KEY" {
+		t.Errorf("auth list MUST mask api_key in JSON output; got raw key")
+	}
+}
+
+// `mmb auth list --human` retains the legacy table.
+func TestAuthList_HumanFlagRendersTable(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("MMB_CONFIG", cfg)
+
+	f := &config.File{}
+	f.Put("alpha", config.Profile{APIURL: "https://alpha.example.com", APIKey: "k"})
+	if err := f.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := runMmbCmd(t, []string{"auth", "list", "--human"}, nil)
+	if err != nil {
+		t.Fatalf("auth list --human: %v", err)
+	}
+	if !strings.Contains(stdout, "PROFILE") || !strings.Contains(stdout, "AGENT") {
+		t.Errorf("--human MUST render table headers; got: %s", stdout)
+	}
+	// Table output is NOT valid JSON.
+	if json.Unmarshal([]byte(stdout), new(any)) == nil {
+		t.Errorf("--human output must NOT be JSON-parseable; got: %s", stdout)
+	}
+}
+
 // `mmb auth logout` removes the profile and promotes a new default.
 func TestAuthLogout_RemovesAndPromotesNextDefault(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "config.json")

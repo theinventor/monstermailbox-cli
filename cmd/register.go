@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/theinventor/monstermailbox-cli/internal/client"
+	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/spf13/cobra"
 )
 
@@ -28,6 +29,7 @@ import (
 //	422 — validation failed
 func newRegisterCmd() *cobra.Command {
 	var address, email string
+	var mf mutationFlags
 	c := &cobra.Command{
 		Use:   "register",
 		Short: "Register a new agent and trigger the human-owner invite flow",
@@ -38,18 +40,24 @@ Save it immediately; there is no way to retrieve it again.
 This command does NOT use MONSTERMAILBOX_API_KEY (the endpoint is public).`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if address == "" || email == "" {
-				return fmt.Errorf("--address and --email are both required")
+				return exitcode.Wrap(exitcode.Usage,
+					fmt.Errorf("--address and --email are both required"))
 			}
 			payload := map[string]any{
 				"desired_address": address,
 				"owner_email":     email,
 			}
 
+			if mf.DryRun {
+				return printJSON(cmd.OutOrStdout(),
+					newDryRunEnvelope(http.MethodPost, "/agents/register", payload, mf))
+			}
+
 			cli := client.New()
 			// /agents/register is unauthenticated. Zero the API key so a
 			// stale/wrong env var doesn't get sent on a public endpoint.
 			cli.APIKey = ""
-			resp, err := cli.Do(http.MethodPost, "/agents/register", payload, nil)
+			resp, err := cli.DoWithHeaders(http.MethodPost, "/agents/register", payload, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("POST /agents/register: %w", err)
 			}
@@ -67,5 +75,6 @@ This command does NOT use MONSTERMAILBOX_API_KEY (the endpoint is public).`,
 	}
 	c.Flags().StringVar(&address, "address", "", "desired local-part (e.g. 'my-agent' → my-agent@monstermailbox.com) — required")
 	c.Flags().StringVar(&email, "email", "", "human owner's email — receives the claim invite — required")
+	bindMutationFlags(c, &mf)
 	return c
 }

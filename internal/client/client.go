@@ -155,6 +155,13 @@ func (c *Client) MaskedAPIKey() string {
 // Returns the *http.Response untouched so callers (and tests) can
 // assert on status, headers, and body directly.
 func (c *Client) Do(method, path string, body any, query url.Values) (*http.Response, error) {
+	return c.DoWithHeaders(method, path, body, query, nil)
+}
+
+// DoWithHeaders is the extended form of Do that lets callers attach
+// additional request headers (e.g. `Idempotency-Key` for principle 4
+// safe-retries). Pass nil for `extra` to behave exactly like Do.
+func (c *Client) DoWithHeaders(method, path string, body any, query url.Values, extra map[string]string) (*http.Response, error) {
 	u := c.BaseURL + path
 	if query != nil && len(query) > 0 {
 		u += "?" + query.Encode()
@@ -182,6 +189,12 @@ func (c *Client) Do(method, path string, body any, query url.Values) (*http.Resp
 
 	if c.APIKey != "" {
 		req.Header.Set("Authorization", AuthScheme+" "+c.APIKey)
+	}
+
+	for k, v := range extra {
+		if v != "" {
+			req.Header.Set(k, v)
+		}
 	}
 
 	return c.HTTPClient.Do(req)

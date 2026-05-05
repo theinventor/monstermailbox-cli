@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/theinventor/monstermailbox-cli/internal/client"
+	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/spf13/cobra"
 )
 
@@ -15,12 +16,14 @@ import (
 func newNewEmailCmd() *cobra.Command {
 	var to, subject, body string
 	var cc, bcc []string
+	var mf mutationFlags
 	c := &cobra.Command{
 		Use:   "new-email",
 		Short: "Send a brand-new outbound thread (no reply context)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if to == "" || subject == "" || body == "" {
-				return fmt.Errorf("--to, --subject, and --body are all required")
+				return exitcode.Wrap(exitcode.Usage,
+					fmt.Errorf("--to, --subject, and --body are all required"))
 			}
 			payload := map[string]any{
 				"to":        to,
@@ -34,8 +37,13 @@ func newNewEmailCmd() *cobra.Command {
 				payload["bcc"] = bcc
 			}
 
+			if mf.DryRun {
+				return printJSON(cmd.OutOrStdout(),
+					newDryRunEnvelope(http.MethodPost, "/send", payload, mf))
+			}
+
 			cli := client.New()
-			resp, err := cli.Do(http.MethodPost, "/send", payload, nil)
+			resp, err := cli.DoWithHeaders(http.MethodPost, "/send", payload, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("POST /send: %w", err)
 			}
@@ -48,5 +56,6 @@ func newNewEmailCmd() *cobra.Command {
 	c.Flags().StringVar(&body, "body", "", "plain-text body — required")
 	c.Flags().StringSliceVar(&cc, "cc", nil, "cc recipients (comma-separated or repeat the flag)")
 	c.Flags().StringSliceVar(&bcc, "bcc", nil, "bcc recipients (comma-separated or repeat the flag)")
+	bindMutationFlags(c, &mf)
 	return c
 }

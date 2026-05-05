@@ -4,15 +4,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/theinventor/monstermailbox-cli/internal/client"
+	"github.com/theinventor/monstermailbox-cli/internal/enums"
+	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
+	"github.com/theinventor/monstermailbox-cli/internal/sse"
 	"github.com/spf13/cobra"
 )
 
-// inbox is the parent for `inbox list` + `inbox watch`.
+// inbox is the parent for `inbox list`, `inbox watch`, `inbox wait`.
 func newInboxCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "inbox",
@@ -20,6 +25,7 @@ func newInboxCmd() *cobra.Command {
 	}
 	c.AddCommand(newInboxListCmd())
 	c.AddCommand(newInboxWatchCmd())
+	c.AddCommand(newInboxWaitCmd())
 	return c
 }
 
@@ -46,6 +52,9 @@ func newInboxListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List recent inbound messages (default: unread, trust-state trusted)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := enums.Validate("state", state, enums.InboxStates); err != nil {
+				return exitcode.Wrap(exitcode.Usage, err)
+			}
 			cli := client.New()
 			q := url.Values{}
 			if state != "" {
@@ -95,7 +104,8 @@ func newInboxListCmd() *cobra.Command {
 			if len(body) == 0 {
 				hint = fmt.Sprintf(" (empty body — check %s is the right API URL)", resp.Request.URL.String())
 			}
-			return fmt.Errorf("HTTP %d %s%s", resp.StatusCode, http.StatusText(resp.StatusCode), hint)
+			return exitcode.Wrap(exitcode.FromHTTPStatus(resp.StatusCode),
+				fmt.Errorf("HTTP %d %s%s", resp.StatusCode, http.StatusText(resp.StatusCode), hint))
 		},
 	}
 	c.Flags().StringVar(&state, "state", "", "filter by state (trusted|quarantined|rejected)")
@@ -164,29 +174,232 @@ func buildInboxHint(body []byte, allFlag bool) string {
 	return fmt.Sprintf("%s · totals: %s%s", prefix, totals, tail)
 }
 
-// `mmb inbox watch --json` → GET /events (SSE long-poll).
+// `mmb inbox watch [--state ...]` → GET /events (SSE long-poll).
 //
-// v0 stub: makes the GET and streams the response body to stdout.
-// A future loop swaps in a real SSE parser; the wire shape stays.
+// Streams events forever, reconnecting with exponential backoff +
+// jitter on disconnect (principle 8). Each event is emitted to stdout
+// as one JSON line: `{"event":"<name>","data":<original>}` so agents
+// can split on \n and parse with a streaming JSON decoder. Heartbeat
+// comments from the server are NOT emitted to stdout — they only
+// reset the reconnect timer.
+//
+// `--state` filters client-side: events whose payload doesn't match
+// the requested trust state are dropped before stdout. The server
+// emits everything; the CLI narrows.
 func newInboxWatchCmd() *cobra.Command {
 	var jsonMode bool
+	var state string
+	var maxReconnects int
 	c := &cobra.Command{
 		Use:   "watch",
-		Short: "Stream inbound events as they arrive",
+		Short: "Stream inbound events as they arrive (auto-reconnect)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cli := client.New()
-			resp, err := cli.Do(http.MethodGet, "/events", nil, nil)
-			if err != nil {
-				return fmt.Errorf("GET /events: %w", err)
+			if err := enums.Validate("state", state, enums.InboxStates); err != nil {
+				return exitcode.Wrap(exitcode.Usage, err)
 			}
-			defer resp.Body.Close()
-			_, copyErr := io.Copy(cmd.OutOrStdout(), resp.Body)
-			_ = jsonMode // accepted but the server response IS already SSE w/ JSON payloads
-			return copyErr
+			_ = jsonMode // accepted; output is always JSON-per-line
+			return runEventStream(cmd, eventStreamOptions{
+				stopOnFirst:   false,
+				stateFilter:   state,
+				maxReconnects: maxReconnects,
+			})
 		},
 	}
-	c.Flags().BoolVar(&jsonMode, "json", false, "emit raw JSON events (default)")
+	c.Flags().BoolVar(&jsonMode, "json", true, "emit raw JSON events per line (always on)")
+	c.Flags().StringVar(&state, "state", "", "only emit events for this trust state (trusted|quarantined|rejected)")
+	c.Flags().IntVar(&maxReconnects, "max-reconnects", 0, "stop after N reconnect attempts (0 = forever)")
 	return c
+}
+
+// `mmb inbox wait [--timeout=5m] [--state=...]` — block once for the
+// next matching event, then exit (principle 8: --wait-style).
+//
+// Emits exactly one JSON event to stdout on success; exits with a
+// timeout-class error if the window elapses with no match. Use this
+// inside agent loops where "watch forever" is the wrong shape — most
+// agent flows want "block until something arrives, then act."
+func newInboxWaitCmd() *cobra.Command {
+	var state string
+	var timeout time.Duration
+	c := &cobra.Command{
+		Use:   "wait",
+		Short: "Block once for the next inbound event, then exit",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := enums.Validate("state", state, enums.InboxStates); err != nil {
+				return exitcode.Wrap(exitcode.Usage, err)
+			}
+			return runEventStream(cmd, eventStreamOptions{
+				stopOnFirst:   true,
+				stateFilter:   state,
+				overallDeadline: time.Now().Add(timeout),
+				maxReconnects: 0,
+			})
+		},
+	}
+	c.Flags().StringVar(&state, "state", "", "only count events for this trust state (trusted|quarantined|rejected)")
+	c.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "give up after this duration with no matching event")
+	return c
+}
+
+// eventStreamOptions configures runEventStream's behavior. Both
+// `inbox watch` (forever) and `inbox wait` (one-shot) are the same
+// loop with different exit conditions:
+//
+//   • watch       → stopOnFirst=false, overallDeadline=zero
+//   • wait        → stopOnFirst=true,  overallDeadline=now+timeout
+type eventStreamOptions struct {
+	stopOnFirst     bool
+	stateFilter     string
+	overallDeadline time.Time // zero means no deadline
+	maxReconnects   int
+}
+
+// runEventStream is the shared SSE consumer for `inbox watch` and
+// `inbox wait`. Reconnects with exponential backoff + jitter on
+// disconnect; exits cleanly on EOF when stopOnFirst is true and a
+// matching event has been emitted; honors overallDeadline for the
+// `--timeout` shape.
+func runEventStream(cmd *cobra.Command, opts eventStreamOptions) error {
+	cli := client.New()
+	out := cmd.OutOrStdout()
+
+	// Backoff window for reconnects. Capped at 30s — long enough that
+	// a flapping server doesn't get hammered, short enough that an
+	// agent waiting for an event doesn't sit idle for minutes.
+	backoff := time.Second
+	const maxBackoff = 30 * time.Second
+	reconnects := 0
+
+	for {
+		if !opts.overallDeadline.IsZero() && time.Now().After(opts.overallDeadline) {
+			return exitcode.Wrap(exitcode.Generic,
+				fmt.Errorf("timed out after %s with no matching event", opts.overallDeadline.Sub(time.Now()).Abs()))
+		}
+
+		emitted, err := streamOnce(out, cli, opts)
+		if emitted && opts.stopOnFirst {
+			return nil
+		}
+
+		// Stream ended (EOF or transport error). Decide whether to
+		// reconnect or surface the error.
+		if opts.maxReconnects > 0 && reconnects >= opts.maxReconnects {
+			return err // may be nil on clean EOF
+		}
+		reconnects++
+
+		// Sleep backoff + ±20% jitter before reconnecting. If a
+		// deadline is set, never sleep past it.
+		jitter := time.Duration(float64(backoff) * (0.8 + 0.4*rand.Float64()))
+		if !opts.overallDeadline.IsZero() {
+			remain := time.Until(opts.overallDeadline)
+			if remain <= 0 {
+				continue // top of loop will surface the timeout error
+			}
+			if jitter > remain {
+				jitter = remain
+			}
+		}
+		time.Sleep(jitter)
+
+		// Exponential, capped.
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+}
+
+// streamOnce opens the /events stream and consumes events until EOF
+// or transport error. Returns (didEmitMatching, err). Heartbeat
+// comments are silently consumed (proof of life — they reset the
+// connection's effective freshness without polluting stdout).
+func streamOnce(out io.Writer, cli *client.Client, opts eventStreamOptions) (bool, error) {
+	resp, err := cli.Do(http.MethodGet, "/events", nil, nil)
+	if err != nil {
+		return false, fmt.Errorf("GET /events: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		// 401/403 are terminal — don't reconnect on auth failure.
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return false, exitcode.Wrap(exitcode.Auth,
+				fmt.Errorf("GET /events: HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode)))
+		}
+		return false, exitcode.Wrap(exitcode.FromHTTPStatus(resp.StatusCode),
+			fmt.Errorf("GET /events: HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode)))
+	}
+
+	r := sse.New(resp.Body)
+	emitted := false
+	for {
+		ev, err := r.Next()
+		if err == io.EOF {
+			return emitted, nil
+		}
+		if err != nil {
+			return emitted, err
+		}
+		if ev.IsComment {
+			// Heartbeat — keep the connection alive in our timer logic
+			// (tracked implicitly because we re-enter Next), don't emit.
+			continue
+		}
+
+		// `connected` is the server's opening hello — useful diagnostic
+		// but not user-meaningful for `wait` semantics. Suppress for
+		// `wait` so it doesn't satisfy stopOnFirst on the hello alone.
+		if ev.Name == "connected" && opts.stopOnFirst {
+			continue
+		}
+
+		if !matchesStateFilter(ev, opts.stateFilter) {
+			continue
+		}
+
+		// Emit one JSON line: {"event":"...","data":<original>}.
+		// `data` is unparsed pass-through so agents see the server's
+		// exact payload.
+		envelope := map[string]any{"event": ev.Name}
+		var parsed any
+		if json.Unmarshal([]byte(ev.Data), &parsed) == nil {
+			envelope["data"] = parsed
+		} else {
+			envelope["data"] = ev.Data
+		}
+		raw, _ := json.Marshal(envelope)
+		if _, werr := fmt.Fprintln(out, string(raw)); werr != nil {
+			return emitted, werr
+		}
+		emitted = true
+
+		if opts.stopOnFirst {
+			return emitted, nil
+		}
+	}
+}
+
+// matchesStateFilter returns true when the event's payload's state
+// matches the requested filter (or no filter is set). Falls open on
+// parse failure — better to over-emit than swallow events the agent
+// might want to see.
+func matchesStateFilter(ev sse.Event, filter string) bool {
+	if filter == "" {
+		return true
+	}
+	var payload struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+		return true
+	}
+	if payload.State == "" {
+		return true
+	}
+	return payload.State == filter
 }
 
 // passthroughJSON pretty-prints a JSON-ish response body. If the
@@ -229,7 +442,8 @@ func passthroughJSON(w io.Writer, resp *http.Response) error {
 			// hitting the marketing site, a stale dev URL, etc.
 			hint = fmt.Sprintf(" (empty body — check %s is the right API URL)", resp.Request.URL.String())
 		}
-		return fmt.Errorf("HTTP %d %s%s", resp.StatusCode, http.StatusText(resp.StatusCode), hint)
+		return exitcode.Wrap(exitcode.FromHTTPStatus(resp.StatusCode),
+			fmt.Errorf("HTTP %d %s%s", resp.StatusCode, http.StatusText(resp.StatusCode), hint))
 	}
 	return nil
 }

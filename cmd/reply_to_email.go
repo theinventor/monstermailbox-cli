@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/theinventor/monstermailbox-cli/internal/client"
+	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/spf13/cobra"
 )
 
@@ -22,6 +23,7 @@ func newReplyToEmailCmd() *cobra.Command {
 	var toMessageID, body, subjectOverride string
 	var cc, bcc []string
 	var noQuote bool
+	var mf mutationFlags
 	c := &cobra.Command{
 		Use:   "reply-to-email",
 		Short: "Reply to an inbound message (threading is automatic)",
@@ -35,7 +37,8 @@ the recipient sees context the way every email client renders it.
 Pass --no-quote to send a clean body with no quoted history.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if toMessageID == "" || body == "" {
-				return fmt.Errorf("--to-message-id and --body are both required")
+				return exitcode.Wrap(exitcode.Usage,
+					fmt.Errorf("--to-message-id and --body are both required"))
 			}
 
 			cli := client.New()
@@ -67,7 +70,12 @@ Pass --no-quote to send a clean body with no quoted history.`,
 				payload["bcc"] = bcc
 			}
 
-			resp, err := cli.Do(http.MethodPost, "/send", payload, nil)
+			if mf.DryRun {
+				return printJSON(cmd.OutOrStdout(),
+					newDryRunEnvelope(http.MethodPost, "/send", payload, mf))
+			}
+
+			resp, err := cli.DoWithHeaders(http.MethodPost, "/send", payload, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("POST /send: %w", err)
 			}
@@ -81,6 +89,7 @@ Pass --no-quote to send a clean body with no quoted history.`,
 	c.Flags().StringSliceVar(&cc, "cc", nil, "cc recipients (comma-separated or repeat the flag)")
 	c.Flags().StringSliceVar(&bcc, "bcc", nil, "bcc recipients (comma-separated or repeat the flag)")
 	c.Flags().BoolVar(&noQuote, "no-quote", false, "send body alone without quoting the original message")
+	bindMutationFlags(c, &mf)
 	return c
 }
 
@@ -108,7 +117,8 @@ func fetchOriginalMessage(cli *client.Client, id string) (*originalMessage, erro
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("no such message in your mailbox: %s", id)
+		return nil, exitcode.Wrap(exitcode.NotFound,
+			fmt.Errorf("no such message in your mailbox: %s", id))
 	}
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
@@ -120,7 +130,8 @@ func fetchOriginalMessage(cli *client.Client, id string) (*originalMessage, erro
 			// here because reply-to-email handles the response itself.
 			hint = fmt.Sprintf("(empty body — check %s is the right API URL)", resp.Request.URL.String())
 		}
-		return nil, fmt.Errorf("HTTP %d %s: %s", resp.StatusCode, http.StatusText(resp.StatusCode), hint)
+		return nil, exitcode.Wrap(exitcode.FromHTTPStatus(resp.StatusCode),
+			fmt.Errorf("HTTP %d %s: %s", resp.StatusCode, http.StatusText(resp.StatusCode), hint))
 	}
 
 	var parsed originalMessage
