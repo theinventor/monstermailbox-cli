@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/theinventor/monstermailbox-cli/internal/client"
+	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/spf13/cobra"
 )
 
@@ -26,7 +27,8 @@ func newSendCmd() *cobra.Command {
 				"warning: `mmb send` is deprecated; use `mmb new-email` or `mmb reply-to-email`")
 
 			if to == "" || subject == "" || body == "" {
-				return fmt.Errorf("--to, --subject, and --body are all required")
+				return exitcode.Wrap(exitcode.Usage,
+					fmt.Errorf("--to, --subject, and --body are all required"))
 			}
 			payload := map[string]any{
 				"to":        to,

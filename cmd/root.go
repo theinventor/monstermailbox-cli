@@ -53,6 +53,7 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 
+	root.AddCommand(newAgentContextCmd())
 	root.AddCommand(newAuthCmd())
 	root.AddCommand(newWhoamiCmd())
 	root.AddCommand(newRegisterCmd())
@@ -65,6 +66,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newNewEmailCmd())
 	root.AddCommand(newReplyToEmailCmd())
 	root.AddCommand(newQuarantineCmd())
+	root.AddCommand(newFeedbackCmd())
 
 	return root
 }

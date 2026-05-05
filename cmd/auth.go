@@ -9,6 +9,7 @@ import (
 
 	"github.com/theinventor/monstermailbox-cli/internal/client"
 	"github.com/theinventor/monstermailbox-cli/internal/config"
+	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/spf13/cobra"
 )
 
@@ -68,7 +69,8 @@ If you ALREADY have a key (issued from the dashboard, copied from
 a teammate, etc.), use 'mmb auth save' instead.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if address == "" || email == "" {
-				return fmt.Errorf("--address and --email are both required")
+				return exitcode.Wrap(exitcode.Usage,
+					fmt.Errorf("--address and --email are both required"))
 			}
 
 			// Use a fresh, unauthenticated client — register is public.
@@ -152,7 +154,8 @@ the key came from somewhere other than 'mmb auth login' (the dashboard,
 a teammate, an environment variable you want to make permanent).`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if profileName == "" || apiKey == "" {
-				return fmt.Errorf("--profile and --api-key are both required")
+				return exitcode.Wrap(exitcode.Usage,
+					fmt.Errorf("--profile and --api-key are both required"))
 			}
 			if apiURL == "" {
 				apiURL = client.DefaultAPIURL
@@ -191,15 +194,63 @@ a teammate, an environment variable you want to make permanent).`,
 }
 
 // `mmb auth status` — show what creds the CLI will use right now.
-// Honors --profile passed at the auth subcommand level.
+//
+// Output is JSON by default (principle 2 — agent is the primary
+// audience); pass `--human` for the table layout humans prefer at
+// a terminal. Honors --profile passed at the auth subcommand level.
 func newAuthStatusCmd() *cobra.Command {
 	var profile string
+	var human bool
 	c := &cobra.Command{
 		Use:   "status",
-		Short: "Show the credentials the CLI will use",
+		Short: "Show the credentials the CLI will use (JSON by default)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cli := client.NewWithProfile(profile)
 			out := cmd.OutOrStdout()
+
+			// Always compute the same record; rendering choice differs.
+			rec := map[string]any{
+				"api_url":     cli.BaseURL,
+				"api_key":     cli.MaskedAPIKey(),
+				"source":      cli.Source,
+				"cli_version": Version,
+			}
+			if rec["source"] == "" {
+				rec["source"] = nil
+			}
+			if strings.HasPrefix(cli.Source, "profile:") {
+				name := strings.TrimPrefix(cli.Source, "profile:")
+				if f, err := config.Load(); err == nil {
+					if p, ok := f.Get(name); ok {
+						rec["profile"] = name
+						if p.AgentAddress != "" {
+							rec["agent_address"] = p.AgentAddress
+						}
+						if p.OwnerEmail != "" {
+							rec["owner_email"] = p.OwnerEmail
+						}
+						if p.CreatedAt != "" {
+							rec["saved_at"] = p.CreatedAt
+						}
+					}
+				}
+			}
+
+			// Reachability probe — never fails the command, just records.
+			resp, err := cli.Do(http.MethodGet, "/version", nil, nil)
+			if err != nil {
+				rec["reachable"] = false
+				rec["reachable_error"] = err.Error()
+			} else {
+				defer resp.Body.Close()
+				rec["reachable"] = resp.StatusCode < 400
+				rec["server_status"] = resp.StatusCode
+			}
+
+			if !human {
+				return printJSON(out, rec)
+			}
+
 			fmt.Fprintf(out, "api_url:    %s\n", cli.BaseURL)
 			fmt.Fprintf(out, "api_key:    %s\n", cli.MaskedAPIKey())
 			source := cli.Source
@@ -207,51 +258,67 @@ func newAuthStatusCmd() *cobra.Command {
 				source = "(none — auth required for most commands)"
 			}
 			fmt.Fprintf(out, "source:     %s\n", source)
-
-			// If a profile is being used, also surface its metadata.
-			if strings.HasPrefix(cli.Source, "profile:") {
-				name := strings.TrimPrefix(cli.Source, "profile:")
-				if f, err := config.Load(); err == nil {
-					if p, ok := f.Get(name); ok {
-						if p.AgentAddress != "" {
-							fmt.Fprintf(out, "agent:      %s\n", p.AgentAddress)
-						}
-						if p.OwnerEmail != "" {
-							fmt.Fprintf(out, "owner:      %s\n", p.OwnerEmail)
-						}
-						if p.CreatedAt != "" {
-							fmt.Fprintf(out, "saved_at:   %s\n", p.CreatedAt)
-						}
-					}
-				}
+			if addr, ok := rec["agent_address"].(string); ok {
+				fmt.Fprintf(out, "agent:      %s\n", addr)
 			}
-
-			// Verify connectivity by hitting /version (no auth needed).
-			resp, err := cli.Do(http.MethodGet, "/version", nil, nil)
-			if err != nil {
-				fmt.Fprintf(out, "reachable:  no (%v)\n", err)
-				return nil
+			if owner, ok := rec["owner_email"].(string); ok {
+				fmt.Fprintf(out, "owner:      %s\n", owner)
 			}
-			defer resp.Body.Close()
-			fmt.Fprintf(out, "reachable:  yes (HTTP %d)\n", resp.StatusCode)
+			if saved, ok := rec["saved_at"].(string); ok {
+				fmt.Fprintf(out, "saved_at:   %s\n", saved)
+			}
+			if reachable, _ := rec["reachable"].(bool); reachable {
+				fmt.Fprintf(out, "reachable:  yes (HTTP %d)\n", rec["server_status"])
+			} else if msg, ok := rec["reachable_error"].(string); ok {
+				fmt.Fprintf(out, "reachable:  no (%s)\n", msg)
+			} else {
+				fmt.Fprintf(out, "reachable:  no\n")
+			}
 			return nil
 		},
 	}
 	c.Flags().StringVar(&profile, "profile", "", "show status for a specific profile (default: active resolution)")
+	c.Flags().BoolVar(&human, "human", false, "render as a human-friendly table instead of JSON")
 	return c
 }
 
 // `mmb auth list` — enumerate saved profiles.
+//
+// JSON by default; `--human` renders the legacy table layout.
 func newAuthListCmd() *cobra.Command {
-	return &cobra.Command{
+	var human bool
+	c := &cobra.Command{
 		Use:   "list",
-		Short: "List saved profiles",
+		Short: "List saved profiles (JSON by default)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			f, err := config.Load()
 			if err != nil {
 				return err
 			}
 			out := cmd.OutOrStdout()
+
+			if !human {
+				profiles := make([]map[string]any, 0, len(f.Profiles))
+				for _, name := range f.Names() {
+					p := f.Profiles[name]
+					entry := map[string]any{
+						"name":          name,
+						"api_url":       p.APIURL,
+						"api_key":       maskKey(p.APIKey),
+						"is_default":    name == f.DefaultProfile,
+						"agent_address": p.AgentAddress,
+						"owner_email":   p.OwnerEmail,
+						"created_at":    p.CreatedAt,
+					}
+					profiles = append(profiles, entry)
+				}
+				return printJSON(out, map[string]any{
+					"config_path":     config.Path(),
+					"default_profile": f.DefaultProfile,
+					"profiles":        profiles,
+				})
+			}
+
 			if len(f.Profiles) == 0 {
 				fmt.Fprintln(out, "(no profiles — try `mmb auth login`)")
 				return nil
@@ -274,6 +341,8 @@ func newAuthListCmd() *cobra.Command {
 			return nil
 		},
 	}
+	c.Flags().BoolVar(&human, "human", false, "render as a human-friendly table instead of JSON")
+	return c
 }
 
 // `mmb auth use <profile>` — change the default profile.
@@ -299,13 +368,22 @@ func newAuthUseCmd() *cobra.Command {
 	}
 }
 
-// `mmb auth logout [--profile X]` — remove a profile.
+// `mmb auth logout [--profile X] [--force]` — remove a saved profile.
+//
+// --force is currently a no-op alignment flag (logout never prompts
+// today). It is accepted because principle 6 standardizes on --force
+// for destructive bypass; once we add an "are you sure?" prompt for
+// terminals, --force will be required to skip it. Including the flag
+// now means agents written today won't break when the prompt lands.
 func newAuthLogoutCmd() *cobra.Command {
 	var profile string
+	var force bool
 	c := &cobra.Command{
 		Use:   "logout",
 		Short: "Remove a saved profile",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			_ = force // see comment above; reserved for future interactive guard
+
 			f, err := config.Load()
 			if err != nil {
 				return err
@@ -315,10 +393,12 @@ func newAuthLogoutCmd() *cobra.Command {
 				name = f.DefaultProfile
 			}
 			if name == "" {
-				return fmt.Errorf("no profile to remove (config is empty)")
+				return exitcode.Wrap(exitcode.Usage,
+					fmt.Errorf("no profile to remove (config is empty)"))
 			}
 			if !f.Delete(name) {
-				return fmt.Errorf("no profile named %q", name)
+				return exitcode.Wrap(exitcode.NotFound,
+					fmt.Errorf("no profile named %q", name))
 			}
 			if err := f.Save(); err != nil {
 				return err
@@ -334,6 +414,7 @@ func newAuthLogoutCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&profile, "profile", "", "profile to remove (default: current default)")
+	c.Flags().BoolVar(&force, "force", false, "skip any future confirmation prompt (reserved for principle 6 alignment)")
 	return c
 }
 
