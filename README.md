@@ -213,6 +213,13 @@ cli/mmb/
         └── config_test.go
 ```
 
+## Design principles
+
+This CLI follows the **[10 Principles for Agent-Native CLIs](https://trevinsays.com/p/10-principles-for-agent-native-clis)** by
+Trevin Chow. Every new command, flag, and response shape must conform.
+See [`docs/CLI_DESIGN_PRINCIPLES.md`](docs/CLI_DESIGN_PRINCIPLES.md) for
+the project-internal summary with implementation references.
+
 ## Tests
 
 ```sh
