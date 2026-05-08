@@ -70,11 +70,8 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newReplyAllCmd())
 	root.AddCommand(newReplyCustomRecipientsCmd())
 	root.AddCommand(newNewEmailCmd())
-	// Hidden deprecated aliases:
-	//   new-message      — briefly canonical in v0.7; reverted in v0.8.
-	//   reply-to-email   — pre-v0.7 spelling of reply-all.
-	// Both removed in v0.9.
-	root.AddCommand(newNewMessageAliasCmd())
+	// Hidden deprecated alias: `reply-to-email` is the pre-v0.7
+	// spelling of reply-all. Removed in a future cleanup.
 	root.AddCommand(newReplyToEmailAliasCmd())
 	root.AddCommand(newGuidanceCmd())
 	root.AddCommand(newAgentProductFeedbackCmd())
