@@ -1,7 +1,11 @@
-// End-to-end tests for `mmb new-message`, the tertiary outbound verb
+// End-to-end tests for `mmb new-email`, the tertiary outbound verb
 // (use only when you're starting a brand-new thread with no reply
-// context). Plus a smoke test that the deprecated `new-email` alias
-// still dispatches.
+// context). Plus smoke tests that the deprecated `new-message` alias
+// from v0.7 still dispatches to the same code path.
+//
+// File name preserved as new_message_test.go because that's where
+// these tests landed in v0.7; rename in the v0.9 cleanup along with
+// runNewMessage.
 package cmd
 
 import (
@@ -10,12 +14,12 @@ import (
 	"testing"
 )
 
-func TestNewMessageSendsBasicPayloadToSlashSend(t *testing.T) {
+func TestNewEmailSendsBasicPayloadToSlashSend(t *testing.T) {
 	_, cap, err := runCmd(t,
-		[]string{"new-message", "--to", "alice@stripe.com", "--subject", "Hi", "--body", "hello"},
+		[]string{"new-email", "--to", "alice@stripe.com", "--subject", "Hi", "--body", "hello"},
 		202, `{"outbound_id":"o_1","status":"queued"}`)
 	if err != nil {
-		t.Fatalf("new-message returned error: %v", err)
+		t.Fatalf("new-email returned error: %v", err)
 	}
 	if cap.method != http.MethodPost || cap.path != "/send" {
 		t.Errorf("expected POST /send; got %s %s", cap.method, cap.path)
@@ -30,26 +34,26 @@ func TestNewMessageSendsBasicPayloadToSlashSend(t *testing.T) {
 	if body["body_text"] != "hello" {
 		t.Errorf("body.body_text MUST be the --body flag; got: %v", body["body_text"])
 	}
-	// new-message MUST NOT carry reply_mode or in_reply_to — that's a
+	// new-email MUST NOT carry reply_mode or in_reply_to — that's a
 	// reply concern, not a fresh-message concern.
 	if _, ok := body["reply_mode"]; ok {
-		t.Errorf("new-message MUST NOT send reply_mode; got: %v", body["reply_mode"])
+		t.Errorf("new-email MUST NOT send reply_mode; got: %v", body["reply_mode"])
 	}
 }
 
-func TestNewMessageRequiresToAndSubject(t *testing.T) {
-	_, _, err := runCmd(t, []string{"new-message", "--body", "x"}, 200, `{}`)
+func TestNewEmailRequiresToAndSubject(t *testing.T) {
+	_, _, err := runCmd(t, []string{"new-email", "--body", "x"}, 200, `{}`)
 	if err == nil {
-		t.Fatalf("new-message without --to/--subject MUST error")
+		t.Fatalf("new-email without --to/--subject MUST error")
 	}
 	if !strings.Contains(err.Error(), "required") {
 		t.Errorf("error MUST teach what's missing; got: %v", err)
 	}
 }
 
-func TestNewMessageDryRunSkipsHTTP(t *testing.T) {
+func TestNewEmailDryRunSkipsHTTP(t *testing.T) {
 	stdout, cap, err := runCmd(t,
-		[]string{"new-message", "--to", "x@y.com", "--subject", "x", "--body", "y", "--dry-run"},
+		[]string{"new-email", "--to", "x@y.com", "--subject", "x", "--body", "y", "--dry-run"},
 		200, `should-never-fire`)
 	if err != nil {
 		t.Fatalf("dry-run returned error: %v", err)
@@ -62,9 +66,9 @@ func TestNewMessageDryRunSkipsHTTP(t *testing.T) {
 	}
 }
 
-func TestNewMessageSendsCcAndBcc(t *testing.T) {
+func TestNewEmailSendsCcAndBcc(t *testing.T) {
 	_, cap, _ := runCmd(t,
-		[]string{"new-message", "--to", "alice@stripe.com", "--subject", "x", "--body", "y",
+		[]string{"new-email", "--to", "alice@stripe.com", "--subject", "x", "--body", "y",
 			"--cc", "bob@stripe.com,carol@stripe.com",
 			"--bcc", "dave@stripe.com"},
 		202, `{}`)
@@ -79,14 +83,16 @@ func TestNewMessageSendsCcAndBcc(t *testing.T) {
 	}
 }
 
-func TestNewEmailAliasStillDispatchesToSend(t *testing.T) {
+func TestNewMessageAliasStillDispatchesToSend(t *testing.T) {
+	// v0.7 briefly named the canonical verb `new-message`. The alias
+	// stays one release so anyone who started using it keeps working.
 	_, cap, err := runCmd(t,
-		[]string{"new-email", "--to", "alice@stripe.com", "--subject", "x", "--body", "y"},
+		[]string{"new-message", "--to", "alice@stripe.com", "--subject", "x", "--body", "y"},
 		202, `{}`)
 	if err != nil {
 		t.Fatalf("deprecated alias MUST still send: %v", err)
 	}
 	if cap.method != http.MethodPost || cap.path != "/send" {
-		t.Errorf("alias MUST POST /send like new-message; got %s %s", cap.method, cap.path)
+		t.Errorf("alias MUST POST /send like new-email; got %s %s", cap.method, cap.path)
 	}
 }

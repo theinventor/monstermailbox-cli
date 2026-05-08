@@ -52,12 +52,12 @@ func TestAgentContext_EnumeratesEveryTopLevelCommand(t *testing.T) {
 	want := []string{
 		"agent-context", "auth", "whoami", "register", "update",
 		"inbox", "msg", "expect", "whitelist", "send",
-		// v0.7 outbound surface: reply-all primary, narrow secondary,
-		// new-message tertiary. The old new-email / reply-to-email
-		// names are hidden deprecated aliases and MUST NOT show up
-		// here (verified by the next test).
-		"reply-all", "reply-not-all-with-custom-recipients", "new-message",
-		"guidance", "quarantine",
+		// v0.8 outbound surface: reply-all primary, narrow secondary,
+		// new-email tertiary (reverted from v0.7's brief `new-message`
+		// rename). Hidden deprecated aliases (`new-message`,
+		// `reply-to-email`) MUST NOT show up here.
+		"reply-all", "reply-not-all-with-custom-recipients", "new-email",
+		"guidance", "agent-product-feedback", "quarantine",
 	}
 	for _, name := range want {
 		if _, present := commands[name]; !present {
@@ -91,11 +91,13 @@ func TestAgentContext_OmitsHiddenAliases(t *testing.T) {
 		t.Errorf("agent-context MUST expose canonical `whitelist create`")
 	}
 
-	// v0.7 outbound aliases — `new-email` and `reply-to-email` were
-	// renamed; the old names stay for one release as hidden aliases
-	// but MUST NOT be visible here.
-	if _, has := commands["new-email"]; has {
-		t.Errorf("agent-context MUST NOT expose hidden alias `new-email`")
+	// v0.8 outbound aliases:
+	//   - reply-to-email is the pre-v0.7 spelling of reply-all
+	//   - new-message is the v0.7 spelling that we reverted to new-email
+	// Both stay one release as hidden aliases; agent-context MUST NOT
+	// surface them.
+	if _, has := commands["new-message"]; has {
+		t.Errorf("agent-context MUST NOT expose hidden alias `new-message`")
 	}
 	if _, has := commands["reply-to-email"]; has {
 		t.Errorf("agent-context MUST NOT expose hidden alias `reply-to-email`")

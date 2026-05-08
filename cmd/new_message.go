@@ -9,44 +9,38 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// `mmb new-message --to <addr> --subject <s> --body <s>` → POST /send.
-//
-// Tertiary verb (after `reply-all` and
-// `reply-not-all-with-custom-recipients`). Use this when you're
-// starting a brand-new outbound thread with no reply context. If
-// you're replying to an inbound, prefer one of the reply verbs so
-// threading headers stitch correctly.
-//
-// Body forms (at least one required):
-//   --body            inline plain text
-//   --body-html       inline HTML
-//   --body-file       plain text from file (HTML doesn't shell-escape well)
-//   --body-html-file  HTML from file
-func newNewMessageCmd() *cobra.Command {
+// `mmb new-message` is the v0.7 spelling that briefly replaced
+// `new-email`. Reverted in v0.8 — kept here as a hidden deprecated
+// alias so anyone who started using v0.7's name keeps working
+// through one more release. Removed in v0.9 along with
+// reply-to-email.
+func newNewMessageAliasCmd() *cobra.Command {
 	var to, subject string
 	var cc, bcc []string
 	var mf mutationFlags
 	var bf bodyFlags
 	c := &cobra.Command{
-		Use:   "new-message",
-		Short: "Send a brand-new outbound thread (no reply context)",
+		Use:        "new-message",
+		Short:      "(deprecated alias for `new-email`)",
+		Hidden:     true,
+		Deprecated: "use `mmb new-email` instead",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runNewMessage(cmd, to, subject, cc, bcc, &bf, mf)
 		},
 	}
 	c.Flags().StringVar(&to, "to", "", "recipient email — required")
 	c.Flags().StringVar(&subject, "subject", "", "subject — required")
-	c.Flags().StringSliceVar(&cc, "cc", nil, "cc recipients (comma-separated or repeat the flag)")
-	c.Flags().StringSliceVar(&bcc, "bcc", nil, "bcc recipients (comma-separated or repeat the flag)")
+	c.Flags().StringSliceVar(&cc, "cc", nil, "cc recipients")
+	c.Flags().StringSliceVar(&bcc, "bcc", nil, "bcc recipients")
 	bindBodyFlags(c, &bf)
 	bindMutationFlags(c, &mf)
 	return c
 }
 
-// runNewMessage is the shared body for `new-message` and the
-// `new-email` deprecated alias. Pulled out so the alias can call
-// straight through without copy-pasting the validation + payload
-// shape.
+// runNewMessage is the shared body for `new-email` and the
+// `new-message` deprecated alias. Pulled out so both register the
+// same validation + payload shape. The function name keeps its v0.7
+// spelling for code-archaeology continuity; rename in v0.9 cleanup.
 func runNewMessage(cmd *cobra.Command, to, subject string, cc, bcc []string, bf *bodyFlags, mf mutationFlags) error {
 	if to == "" || subject == "" {
 		return exitcode.Wrap(exitcode.Usage,
