@@ -63,8 +63,17 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newExpectCmd())
 	root.AddCommand(newWhitelistCmd())
 	root.AddCommand(newSendCmd())
-	root.AddCommand(newNewEmailCmd())
-	root.AddCommand(newReplyToEmailCmd())
+	// Outbound verbs in priority order:
+	//   reply-all                                 (primary; safe default)
+	//   reply-not-all-with-custom-recipients      (secondary; deliberately awkward)
+	//   new-message                               (tertiary; brand-new thread)
+	root.AddCommand(newReplyAllCmd())
+	root.AddCommand(newReplyCustomRecipientsCmd())
+	root.AddCommand(newNewMessageCmd())
+	// Hidden deprecated aliases — removed in v0.8.
+	root.AddCommand(newNewEmailAliasCmd())
+	root.AddCommand(newReplyToEmailAliasCmd())
+	root.AddCommand(newGuidanceCmd())
 	root.AddCommand(newQuarantineCmd())
 	root.AddCommand(newFeedbackCmd())
 

@@ -21,10 +21,10 @@ func newSendCmd() *cobra.Command {
 	var cc, bcc []string
 	c := &cobra.Command{
 		Use:   "send",
-		Short: "DEPRECATED: use `mmb new-email` or `mmb reply-to-email`",
+		Short: "DEPRECATED: use `mmb new-message`, `mmb reply-all`, or `mmb reply-not-all-with-custom-recipients`",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintln(cmd.ErrOrStderr(),
-				"warning: `mmb send` is deprecated; use `mmb new-email` or `mmb reply-to-email`")
+				"warning: `mmb send` is deprecated; use `mmb new-message` for fresh threads or `mmb reply-all` to reply (the new default)")
 
 			if to == "" || subject == "" || body == "" {
 				return exitcode.Wrap(exitcode.Usage,

@@ -51,8 +51,13 @@ func TestAgentContext_EnumeratesEveryTopLevelCommand(t *testing.T) {
 	}
 	want := []string{
 		"agent-context", "auth", "whoami", "register", "update",
-		"inbox", "msg", "expect", "whitelist", "send", "new-email",
-		"reply-to-email", "quarantine",
+		"inbox", "msg", "expect", "whitelist", "send",
+		// v0.7 outbound surface: reply-all primary, narrow secondary,
+		// new-message tertiary. The old new-email / reply-to-email
+		// names are hidden deprecated aliases and MUST NOT show up
+		// here (verified by the next test).
+		"reply-all", "reply-not-all-with-custom-recipients", "new-message",
+		"guidance", "quarantine",
 	}
 	for _, name := range want {
 		if _, present := commands[name]; !present {
@@ -84,6 +89,16 @@ func TestAgentContext_OmitsHiddenAliases(t *testing.T) {
 	}
 	if _, has := wlSubs["create"]; !has {
 		t.Errorf("agent-context MUST expose canonical `whitelist create`")
+	}
+
+	// v0.7 outbound aliases — `new-email` and `reply-to-email` were
+	// renamed; the old names stay for one release as hidden aliases
+	// but MUST NOT be visible here.
+	if _, has := commands["new-email"]; has {
+		t.Errorf("agent-context MUST NOT expose hidden alias `new-email`")
+	}
+	if _, has := commands["reply-to-email"]; has {
+		t.Errorf("agent-context MUST NOT expose hidden alias `reply-to-email`")
 	}
 }
 
