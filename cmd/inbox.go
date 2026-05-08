@@ -45,7 +45,7 @@ func newInboxCmd() *cobra.Command {
 // payload, a one-line hint goes to stderr (never stdout) so the JSON
 // stays clean for piping into jq.
 func newInboxListCmd() *cobra.Command {
-	var state, since string
+	var state, since, workState string
 	var limit int
 	var all, peek bool
 	c := &cobra.Command{
@@ -53,6 +53,9 @@ func newInboxListCmd() *cobra.Command {
 		Short: "List recent inbound messages (default: unread, trust-state trusted)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := enums.Validate("state", state, enums.InboxStates); err != nil {
+				return exitcode.Wrap(exitcode.Usage, err)
+			}
+			if err := enums.Validate("work-state", workState, enums.WorkStates); err != nil {
 				return exitcode.Wrap(exitcode.Usage, err)
 			}
 			cli := client.New()
@@ -71,6 +74,9 @@ func newInboxListCmd() *cobra.Command {
 			}
 			if peek {
 				q.Set("peek", "true")
+			}
+			if workState != "" {
+				q.Set("work_state", workState)
 			}
 
 			resp, err := cli.Do(http.MethodGet, "/inbox", nil, q)
@@ -108,11 +114,13 @@ func newInboxListCmd() *cobra.Command {
 				fmt.Errorf("HTTP %d %s%s", resp.StatusCode, http.StatusText(resp.StatusCode), hint))
 		},
 	}
-	c.Flags().StringVar(&state, "state", "", "filter by state (trusted|quarantined|rejected)")
+	c.Flags().StringVar(&state, "state", "", "filter by trust state (trusted|quarantined|rejected)")
 	c.Flags().StringVar(&since, "since", "", "ISO8601 lower bound on received_at")
 	c.Flags().IntVar(&limit, "limit", 0, "max rows (0 = server default)")
 	c.Flags().BoolVar(&all, "all", false, "include messages already marked read (default: unread only)")
 	c.Flags().BoolVar(&peek, "peek", false, "do NOT mark the returned messages as read")
+	c.Flags().StringVar(&workState, "work-state", "",
+		"filter by agent-side work_state (e.g. inbox = your actual queue, blocked, awaiting_reply); see WorkStates enum")
 	return c
 }
 
@@ -122,15 +130,17 @@ type inboxEnvelope struct {
 	Messages []json.RawMessage `json:"messages"`
 	Meta     *struct {
 		Showing struct {
-			State  string `json:"state"`
-			Unread bool   `json:"unread"`
-			Peek   bool   `json:"peek"`
+			State     string `json:"state"`
+			Unread    bool   `json:"unread"`
+			Peek      bool   `json:"peek"`
+			WorkState string `json:"work_state"`
 		} `json:"showing"`
 		Returned int `json:"returned"`
 		Counts   map[string]struct {
 			Unread int `json:"unread"`
 			Total  int `json:"total"`
 		} `json:"counts"`
+		WorkStateCounts map[string]int `json:"work_state_counts"`
 	} `json:"meta"`
 }
 
@@ -166,12 +176,27 @@ func buildInboxHint(body []byte, allFlag bool) string {
 	}
 	totals := strings.Join(parts, " · ")
 
+	// Work-state breakdown — only emit non-zero buckets (every agent
+	// has a hundred zero-bucket states the operator doesn't care
+	// about). The order mirrors the openapi.yaml WorkState enum so
+	// the line reads in a predictable shape.
+	workParts := []string{}
+	for _, w := range []string{"inbox", "in_progress", "awaiting_reply", "done", "skipped", "blocked", "deferred"} {
+		if n := env.Meta.WorkStateCounts[w]; n > 0 {
+			workParts = append(workParts, fmt.Sprintf("%s %d", w, n))
+		}
+	}
+	workSection := ""
+	if len(workParts) > 0 {
+		workSection = " · work: " + strings.Join(workParts, ", ")
+	}
+
 	tail := ""
 	if !allFlag {
 		tail = " · use --all for already-read"
 	}
 
-	return fmt.Sprintf("%s · totals: %s%s", prefix, totals, tail)
+	return fmt.Sprintf("%s · totals: %s%s%s", prefix, totals, workSection, tail)
 }
 
 // `mmb inbox watch [--state ...]` → GET /events (SSE long-poll).
