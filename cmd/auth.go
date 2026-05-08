@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,28 +10,39 @@ import (
 
 	"github.com/theinventor/monstermailbox-cli/internal/client"
 	"github.com/theinventor/monstermailbox-cli/internal/config"
+	"github.com/theinventor/monstermailbox-cli/internal/credstore"
 	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/spf13/cobra"
 )
 
-// `mmb auth …` — multi-profile credential management. Stores keys in
-// $XDG_CONFIG_HOME/mmb/config.json (mode 0600). The shape:
+// `mmb auth …` — multi-profile credential management.
 //
-//	{
-//	  "default_profile": "claude-troy-mbp",
-//	  "profiles": {
-//	    "claude-troy-mbp": { "api_url": "...", "api_key": "...",
-//	                        "agent_address": "...", "owner_email": "...",
-//	                        "created_at": "2026-..." }
-//	  }
-//	}
+// Each profile records non-secret metadata (api_url, agent address,
+// owner email, created_at) in $XDG_CONFIG_HOME/mmb/config.json
+// (mode 0600). The actual API key lives in one of two backends:
 //
-// At command time, `client.NewWithProfile()` resolves: --profile flag
-// → MONSTERMAILBOX_API_KEY env → config's default_profile.
+//	keychain — OS keyring (macOS Keychain / Windows Credential
+//	           Manager / Linux libsecret). Default for new profiles
+//	           when available. Secret never lands on disk.
+//	file     — config.json's api_key field, mode 0600. Fallback for
+//	           environments without a working keyring (headless
+//	           Linux, containers, CI) and the legacy storage for
+//	           profiles created before v0.3.0.
+//
+// At command time, `client.NewWithProfile()` resolves credentials:
+//
+//	1. --profile <name>          (explicit override)
+//	2. $MONSTERMAILBOX_API_KEY    (env, beats the config file)
+//	3. config's default_profile  (with whatever backend it declared)
+//	4. nothing (only public endpoints work)
+//
+// Use `mmb auth migrate` to move existing file-backed profiles into
+// the keychain. Run `mmb auth status` to see which backend a profile
+// is using right now.
 func newAuthCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "auth",
-		Short: "Manage saved credentials (login, status, list, use, logout)",
+		Short: "Manage saved credentials (login, status, list, use, logout, migrate)",
 		Long: `Multi-profile credential management for the mmb CLI.
 
 Resolution order at command time:
@@ -39,8 +51,14 @@ Resolution order at command time:
   3. config's default_profile  (~/.config/mmb/config.json)
   4. nothing (only public endpoints work)
 
-Config file is mode 0600 and contains your API keys in plaintext.
-On macOS you may want --keychain (TODO) for OS-keyring storage.`,
+Default storage for new profiles is the OS keychain (macOS Keychain,
+Windows Credential Manager, Linux libsecret). Pass --storage=file to
+keep the secret in config.json (mode 0600) instead, e.g. for headless
+servers without a keyring agent. Pass --storage=keychain to require
+the keychain (errors out if unavailable).
+
+Already have file-backed profiles? Run 'mmb auth migrate' to move
+them into the keychain without re-registering.`,
 	}
 	c.AddCommand(newAuthLoginCmd())
 	c.AddCommand(newAuthSaveCmd())
@@ -48,19 +66,68 @@ On macOS you may want --keychain (TODO) for OS-keyring storage.`,
 	c.AddCommand(newAuthListCmd())
 	c.AddCommand(newAuthUseCmd())
 	c.AddCommand(newAuthLogoutCmd())
+	c.AddCommand(newAuthMigrateCmd())
 	return c
+}
+
+// storageFlagDescription is reused on every command that takes --storage
+// so the help text stays consistent (principle 3 — errors that teach,
+// applied to flag docs).
+const storageFlagDescription = "where to persist the API key: auto (default; keychain if available, else file), keychain, or file"
+
+// resolveStorage centralizes the --storage flag → concrete backend
+// translation. Errors are wrapped with exitcode.Usage so failures get
+// the right exit code (principle 2).
+func resolveStorage(storage string) (string, error) {
+	backend, err := credstore.ResolveBackend(storage)
+	if err != nil {
+		return "", exitcode.Wrap(exitcode.Usage, err)
+	}
+	return backend, nil
+}
+
+// persistProfile is the single write path used by login/save/migrate.
+// It puts the secret in the chosen backend, clears the file-side
+// APIKey when the backend is keychain (so the secret never touches
+// disk), and saves the config file. Returns the canonical backend
+// for the caller to surface in confirmation output.
+func persistProfile(name string, p config.Profile, secret, backend string) (string, error) {
+	canon, err := credstore.Put(name, backend, secret)
+	if err != nil {
+		return "", err
+	}
+	switch canon {
+	case credstore.BackendKeychain:
+		p.APIKey = ""
+	case credstore.BackendFile:
+		p.APIKey = secret
+	}
+	p.Backend = canon
+
+	f, err := config.Load()
+	if err != nil {
+		return "", err
+	}
+	f.Put(name, p)
+	if err := f.Save(); err != nil {
+		return "", err
+	}
+	return canon, nil
 }
 
 // `mmb auth login --address X --email Y` — registers a new agent AND
 // persists the resulting key as a profile. The most common entry point.
 func newAuthLoginCmd() *cobra.Command {
-	var address, email, profileName string
+	var address, email, profileName, storage string
 	c := &cobra.Command{
 		Use:   "login",
 		Short: "Register a new agent and save the API key as a profile",
-		Long: `Calls /agents/register to mint a new agent + API key, then writes the
-key to your config file as a named profile. The first profile saved
-becomes the default.
+		Long: `Calls /agents/register to mint a new agent + API key, then persists the
+key as a named profile. The first profile saved becomes the default.
+
+The API key is stored in the OS keychain by default (macOS Keychain,
+Windows Credential Manager, Linux libsecret). Pass --storage=file to
+keep it in the mode-0600 config file instead.
 
 By default the profile is named after the agent's local-part (e.g.
 'claude-troy-mbp'); override with --profile.
@@ -71,6 +138,11 @@ a teammate, etc.), use 'mmb auth save' instead.`,
 			if address == "" || email == "" {
 				return exitcode.Wrap(exitcode.Usage,
 					fmt.Errorf("--address and --email are both required"))
+			}
+
+			backend, err := resolveStorage(storage)
+			if err != nil {
+				return err
 			}
 
 			// Use a fresh, unauthenticated client — register is public.
@@ -110,24 +182,21 @@ a teammate, etc.), use 'mmb auth save' instead.`,
 				}
 			}
 
-			f, err := config.Load()
+			canon, err := persistProfile(name, config.Profile{
+				APIURL:       cli.BaseURL,
+				AgentAddress: reg.Address,
+				OwnerEmail:   email,
+			}, reg.APIKey, backend)
 			if err != nil {
 				return err
 			}
-			f.Put(name, config.Profile{
-				APIURL:       cli.BaseURL,
-				APIKey:       reg.APIKey,
-				AgentAddress: reg.Address,
-				OwnerEmail:   email,
-			})
-			if err := f.Save(); err != nil {
-				return err
-			}
 
+			f, _ := config.Load() // already saved; reload for default check
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "✓ registered %s\n", reg.Address)
-			fmt.Fprintf(out, "  saved as profile %q in %s\n", name, config.Path())
-			if f.DefaultProfile == name {
+			fmt.Fprintf(out, "  saved as profile %q (storage: %s)\n", name, credstore.Describe(canon))
+			fmt.Fprintf(out, "  config: %s\n", config.Path())
+			if f != nil && f.DefaultProfile == name {
 				fmt.Fprintf(out, "  set as default profile\n")
 			}
 			fmt.Fprintf(out, "  human_owner_status: %s\n", reg.HumanOwnerStatus)
@@ -139,19 +208,23 @@ a teammate, etc.), use 'mmb auth save' instead.`,
 	c.Flags().StringVar(&address, "address", "", "desired local-part (required)")
 	c.Flags().StringVar(&email, "email", "", "owner email — gets the claim invite (required)")
 	c.Flags().StringVar(&profileName, "profile", "", "profile name to save under (default: agent local-part)")
+	c.Flags().StringVar(&storage, "storage", "", storageFlagDescription)
 	return c
 }
 
 // `mmb auth save --profile X --api-key Y --api-url Z` — persist a key
 // you already have (e.g. issued from the dashboard).
 func newAuthSaveCmd() *cobra.Command {
-	var profileName, apiKey, apiURL, agentAddress, ownerEmail string
+	var profileName, apiKey, apiURL, agentAddress, ownerEmail, storage string
 	c := &cobra.Command{
 		Use:   "save",
 		Short: "Save an existing API key as a profile",
-		Long: `Persists a key you already have to the config file. Use this when
-the key came from somewhere other than 'mmb auth login' (the dashboard,
-a teammate, an environment variable you want to make permanent).`,
+		Long: `Persists a key you already have. Use this when the key came from
+somewhere other than 'mmb auth login' (the dashboard, a teammate, an
+environment variable you want to make permanent).
+
+By default the secret is stored in the OS keychain. Pass --storage=file
+to keep it in the mode-0600 config file instead.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if profileName == "" || apiKey == "" {
 				return exitcode.Wrap(exitcode.Usage,
@@ -161,23 +234,25 @@ a teammate, an environment variable you want to make permanent).`,
 				apiURL = client.DefaultAPIURL
 			}
 
-			f, err := config.Load()
+			backend, err := resolveStorage(storage)
 			if err != nil {
 				return err
 			}
-			f.Put(profileName, config.Profile{
+
+			canon, err := persistProfile(profileName, config.Profile{
 				APIURL:       apiURL,
-				APIKey:       apiKey,
 				AgentAddress: agentAddress,
 				OwnerEmail:   ownerEmail,
-			})
-			if err := f.Save(); err != nil {
+			}, apiKey, backend)
+			if err != nil {
 				return err
 			}
 
+			f, _ := config.Load()
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "✓ saved profile %q to %s\n", profileName, config.Path())
-			if f.DefaultProfile == profileName {
+			fmt.Fprintf(out, "✓ saved profile %q (storage: %s)\n", profileName, credstore.Describe(canon))
+			fmt.Fprintf(out, "  config: %s\n", config.Path())
+			if f != nil && f.DefaultProfile == profileName {
 				fmt.Fprintf(out, "  set as default profile\n")
 			}
 			fmt.Fprintf(out, "  api_url: %s\n", apiURL)
@@ -190,6 +265,7 @@ a teammate, an environment variable you want to make permanent).`,
 	c.Flags().StringVar(&apiURL, "api-url", "", "API URL (default: production)")
 	c.Flags().StringVar(&agentAddress, "agent-address", "", "agent's full address (optional, for status display)")
 	c.Flags().StringVar(&ownerEmail, "owner-email", "", "human owner email (optional, for status display)")
+	c.Flags().StringVar(&storage, "storage", "", storageFlagDescription)
 	return c
 }
 
@@ -213,6 +289,7 @@ func newAuthStatusCmd() *cobra.Command {
 				"api_url":     cli.BaseURL,
 				"api_key":     cli.MaskedAPIKey(),
 				"source":      cli.Source,
+				"backend":     credstore.Describe(cli.Backend),
 				"cli_version": Version,
 			}
 			if rec["source"] == "" {
@@ -258,6 +335,9 @@ func newAuthStatusCmd() *cobra.Command {
 				source = "(none — auth required for most commands)"
 			}
 			fmt.Fprintf(out, "source:     %s\n", source)
+			if cli.Backend != "" {
+				fmt.Fprintf(out, "backend:    %s\n", credstore.Describe(cli.Backend))
+			}
 			if addr, ok := rec["agent_address"].(string); ok {
 				fmt.Fprintf(out, "agent:      %s\n", addr)
 			}
@@ -403,6 +483,10 @@ func newAuthLogoutCmd() *cobra.Command {
 			if err := f.Save(); err != nil {
 				return err
 			}
+			// Best-effort: also clear any keychain entry under this
+			// profile name. Errors are silently ignored — the file
+			// profile is already gone, which is the user-visible state.
+			_ = credstore.Delete(name)
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "✓ removed profile %q\n", name)
 			if f.DefaultProfile != "" {
@@ -415,6 +499,98 @@ func newAuthLogoutCmd() *cobra.Command {
 	}
 	c.Flags().StringVar(&profile, "profile", "", "profile to remove (default: current default)")
 	c.Flags().BoolVar(&force, "force", false, "skip any future confirmation prompt (reserved for principle 6 alignment)")
+	return c
+}
+
+// `mmb auth migrate [--profile X] [--all]` — move file-backed profile
+// secrets into the OS keychain without re-registering. The most common
+// upgrade path from pre-v0.3.0 (where every key sat plaintext in
+// config.json).
+//
+// Migration is idempotent: profiles already on the keychain are skipped
+// with a no-op message. The file's api_key is cleared on success — the
+// secret no longer touches disk after this runs.
+func newAuthMigrateCmd() *cobra.Command {
+	var profileName string
+	var all bool
+	c := &cobra.Command{
+		Use:   "migrate",
+		Short: "Move file-backed profile secrets into the OS keychain",
+		Long: `Moves the api_key for one profile (--profile) or every file-backed
+profile (--all) from the config file into the OS keychain.
+
+After this, the config file holds only non-secret metadata. Existing
+authenticated calls keep working — credstore reads from the keychain
+on each request.
+
+Errors out if the OS keychain isn't available (set MMB_DISABLE_KEYCHAIN=1
+to confirm, or pass nothing — there's no point migrating without a
+working keychain).`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if profileName == "" && !all {
+				return exitcode.Wrap(exitcode.Usage,
+					fmt.Errorf("pass --profile <name> or --all"))
+			}
+			if !credstore.KeychainAvailable() {
+				return exitcode.Wrap(exitcode.Generic,
+					errors.New("OS keychain unavailable; cannot migrate (set MMB_DISABLE_KEYCHAIN=0 if you previously disabled it, or run on a host with a keyring agent)"))
+			}
+
+			f, err := config.Load()
+			if err != nil {
+				return err
+			}
+
+			targets := []string{}
+			if all {
+				targets = f.Names()
+			} else {
+				if _, ok := f.Get(profileName); !ok {
+					return exitcode.Wrap(exitcode.NotFound,
+						fmt.Errorf("no profile named %q", profileName))
+				}
+				targets = []string{profileName}
+			}
+
+			out := cmd.OutOrStdout()
+			migrated, skipped := 0, 0
+			for _, name := range targets {
+				p, _ := f.Get(name)
+				switch p.Backend {
+				case credstore.BackendKeychain:
+					fmt.Fprintf(out, "  %s: already on keychain — skipped\n", name)
+					skipped++
+					continue
+				case credstore.BackendFile, "":
+					if p.APIKey == "" {
+						fmt.Fprintf(out, "  %s: no api_key in file — skipped\n", name)
+						skipped++
+						continue
+					}
+					if _, err := credstore.Put(name, credstore.BackendKeychain, p.APIKey); err != nil {
+						return fmt.Errorf("migrate %s: %w", name, err)
+					}
+					p.APIKey = ""
+					p.Backend = credstore.BackendKeychain
+					f.Put(name, *p)
+					migrated++
+					fmt.Fprintf(out, "  %s: migrated → keychain\n", name)
+				default:
+					fmt.Fprintf(out, "  %s: unknown backend %q — skipped\n", name, p.Backend)
+					skipped++
+				}
+			}
+			if migrated > 0 {
+				if err := f.Save(); err != nil {
+					return err
+				}
+			}
+			fmt.Fprintf(out, "\n✓ migrated %d, skipped %d\n", migrated, skipped)
+			return nil
+		},
+	}
+	c.Flags().StringVar(&profileName, "profile", "", "profile to migrate (mutually exclusive with --all)")
+	c.Flags().BoolVar(&all, "all", false, "migrate every file-backed profile")
 	return c
 }
 

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/theinventor/monstermailbox-cli/internal/config"
+	"github.com/theinventor/monstermailbox-cli/internal/credstore"
 )
 
 const (
@@ -67,6 +68,12 @@ type Client struct {
 	// and for clear errors that point users at `mmb auth login`. One of:
 	// "env", "profile:<name>", "" (no credentials).
 	Source string
+
+	// Backend describes the per-profile storage backend the resolved
+	// key came from. One of "keychain", "file", "env", or "" when no
+	// credentials are loaded. Surfaces in `auth status` so users can
+	// see whether their secret lives on disk or in the OS keyring.
+	Backend string
 }
 
 // New constructs a Client using the default resolution order (no explicit
@@ -90,10 +97,7 @@ func NewWithProfile(profile string) *Client {
 	if profile != "" {
 		if f, err := config.Load(); err == nil {
 			if p, ok := f.Get(profile); ok {
-				c.BaseURL = strings.TrimRight(p.APIURL, "/")
-				c.APIKey = p.APIKey
-				c.Source = "profile:" + profile
-				return c.fillDefaults()
+				return c.loadFromProfile(profile, p).fillDefaults()
 			}
 		}
 	}
@@ -103,16 +107,14 @@ func NewWithProfile(profile string) *Client {
 		c.BaseURL = strings.TrimRight(os.Getenv(EnvAPIURL), "/")
 		c.APIKey = envKey
 		c.Source = "env"
+		c.Backend = credstore.BackendEnv
 		return c.fillDefaults()
 	}
 
 	// Persisted default profile.
 	if f, err := config.Load(); err == nil {
 		if p, ok := f.Get(""); ok {
-			c.BaseURL = strings.TrimRight(p.APIURL, "/")
-			c.APIKey = p.APIKey
-			c.Source = "profile:" + f.DefaultProfile
-			return c.fillDefaults()
+			return c.loadFromProfile(f.DefaultProfile, p).fillDefaults()
 		}
 	}
 
@@ -129,6 +131,24 @@ func NewWithProfile(profile string) *Client {
 func (c *Client) fillDefaults() *Client {
 	if c.BaseURL == "" {
 		c.BaseURL = DefaultAPIURL
+	}
+	return c
+}
+
+// loadFromProfile populates BaseURL/APIKey/Source/Backend from a Profile,
+// resolving the secret through credstore. A keychain miss leaves APIKey
+// empty (the caller will see "auth required" on the next authenticated
+// call) so a partially-broken keychain doesn't hard-fail every command.
+func (c *Client) loadFromProfile(name string, p *config.Profile) *Client {
+	c.BaseURL = strings.TrimRight(p.APIURL, "/")
+	c.Source = "profile:" + name
+	if p.Backend == "" {
+		c.Backend = credstore.BackendFile
+	} else {
+		c.Backend = p.Backend
+	}
+	if secret, err := credstore.Get(name, p.Backend, p.APIKey); err == nil {
+		c.APIKey = secret
 	}
 	return c
 }

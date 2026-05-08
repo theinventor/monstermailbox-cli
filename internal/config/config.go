@@ -39,11 +39,28 @@ import (
 	"time"
 )
 
-// Profile is one named (api_url, api_key) pair, plus convenience metadata
-// the user can read via `mmb auth status`.
+// Profile is one named credential record. The actual API key MAY live
+// in the OS keychain rather than in this struct — see Backend.
+//
+// Fields:
+//
+//	APIURL       — base URL the client will hit.
+//	APIKey       — secret, plaintext. EMPTY when Backend == "keychain";
+//	               in that case the credstore package fetches it from
+//	               the OS keyring on demand.
+//	Backend      — where the secret actually lives. One of:
+//	                 ""         (legacy, treat as "file")
+//	                 "file"     APIKey above is the live secret
+//	                 "keychain" APIKey is empty; ask credstore.Get
+//	               No "env" backend: env always wins at the client
+//	               layer (see internal/client.NewWithProfile) and is
+//	               never persisted.
+//	AgentAddress, OwnerEmail, CreatedAt — non-secret metadata for the
+//	               user's reference (`auth status`, `auth list`).
 type Profile struct {
 	APIURL       string `json:"api_url"`
-	APIKey       string `json:"api_key"`
+	APIKey       string `json:"api_key,omitempty"`
+	Backend      string `json:"backend,omitempty"`
 	AgentAddress string `json:"agent_address,omitempty"`
 	OwnerEmail   string `json:"owner_email,omitempty"`
 	CreatedAt    string `json:"created_at,omitempty"`
