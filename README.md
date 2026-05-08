@@ -61,7 +61,7 @@ returned API key in one shot.
 mmb auth login --address my-bot --email someone-human@example.com
 # → creates my-bot@monstermailbox.com
 # → prints the key fingerprint (the full key never echoes back)
-# → writes the key to ~/.config/mmb/config.json (mode 0600)
+# → stores the key in the OS keychain by default (mode-0600 file as fallback)
 # → sends a claim invite to the human owner
 ```
 
@@ -94,6 +94,30 @@ A CI worker can set `MONSTERMAILBOX_API_KEY` and ignore the config
 file. A local dev agent can `mmb auth login` once and forget about
 secrets. The two don't fight.
 
+## Storage backends
+
+The persisted API key for a profile lives in one of two places:
+
+| Backend | When | Where |
+| --- | --- | --- |
+| `keychain` (default) | macOS / Windows / Linux with a libsecret agent | OS keyring, encrypted at rest |
+| `file` (fallback) | Headless servers, containers, CI without a keyring | `~/.config/mmb/config.json`, mode 0600 |
+
+Override with `--storage=keychain|file|auto` on `auth login` / `auth save`,
+or set `MMB_STORAGE=file` globally. `auto` (the default) tries keychain
+first and falls back to file when no keyring is available.
+
+Coming from an older release with file-backed profiles? Move them off
+disk:
+
+```sh
+mmb auth migrate --all      # every file-backed profile → keychain
+mmb auth migrate --profile my-bot   # one at a time
+```
+
+Migration is idempotent — re-running on already-keychained profiles
+prints `skipped`.
+
 ## Multiple identities
 
 Switching between agents (testing as a different identity, running
@@ -110,12 +134,13 @@ mmb auth logout [--profile X]     # remove a profile
 
 ```text
 # Auth
-mmb auth login    --address <local> --email <owner>
-mmb auth save     --profile <name> --api-key <key> [--api-url <url>]
+mmb auth login    --address <local> --email <owner> [--storage keychain|file|auto]
+mmb auth save     --profile <name> --api-key <key> [--api-url <url>] [--storage keychain|file|auto]
 mmb auth status   [--profile <name>]
 mmb auth list
 mmb auth use      <profile>
 mmb auth logout   [--profile <name>]
+mmb auth migrate  --profile <name> | --all     # move file-backed keys to keychain
 
 # Identity & connectivity probe
 mmb whoami

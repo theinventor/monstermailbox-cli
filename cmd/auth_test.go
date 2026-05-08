@@ -12,6 +12,7 @@ import (
 
 	"github.com/theinventor/monstermailbox-cli/internal/client"
 	"github.com/theinventor/monstermailbox-cli/internal/config"
+	"github.com/theinventor/monstermailbox-cli/internal/credstore"
 )
 
 // runMmbCmd runs an mmb command with stdout captured. Pass envs in.
@@ -109,7 +110,12 @@ func TestAuth_ConfigDefaultUsedWhenNoEnv(t *testing.T) {
 }
 
 // `mmb auth save` writes a profile and sets it as default on first save.
-func TestAuthSave_FirstProfileBecomesDefault(t *testing.T) {
+//
+// Storage backend matters here: with --storage=file the api_key lives
+// in config.json; with --storage=keychain (or auto when keychain works)
+// the api_key field is empty in the file and the secret is retrievable
+// via credstore. Both shapes are tested.
+func TestAuthSave_FirstProfileBecomesDefault_FileBackend(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "config.json")
 	t.Setenv("MMB_CONFIG", cfg)
 	t.Setenv("MONSTERMAILBOX_API_KEY", "")
@@ -120,17 +126,21 @@ func TestAuthSave_FirstProfileBecomesDefault(t *testing.T) {
 		"--api-key", "mmb_team_bot_key_long",
 		"--api-url", "https://api.example.com",
 		"--agent-address", "team-bot@example.com",
+		"--storage", "file",
 	}, nil)
 	if err != nil {
 		t.Fatalf("auth save: %v", err)
 	}
-	if !strings.Contains(stdout, "saved profile \"team-bot\"") {
+	if !strings.Contains(stdout, `saved profile "team-bot"`) {
 		t.Errorf("missing save confirmation: %s", stdout)
+	}
+	if !strings.Contains(stdout, "storage: file") {
+		t.Errorf("missing file backend marker: %s", stdout)
 	}
 	if !strings.Contains(stdout, "set as default profile") {
 		t.Errorf("first save should auto-default: %s", stdout)
 	}
-	// Persisted shape on disk.
+	// File backend: api_key persists IN the config file.
 	raw, err := os.ReadFile(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -142,8 +152,151 @@ func TestAuthSave_FirstProfileBecomesDefault(t *testing.T) {
 	if parsed.DefaultProfile != "team-bot" {
 		t.Errorf("default not persisted: %q", parsed.DefaultProfile)
 	}
-	if parsed.Profiles["team-bot"].APIKey != "mmb_team_bot_key_long" {
-		t.Errorf("api_key not persisted")
+	if got := parsed.Profiles["team-bot"].APIKey; got != "mmb_team_bot_key_long" {
+		t.Errorf("api_key not persisted in file: got %q", got)
+	}
+	if got := parsed.Profiles["team-bot"].Backend; got != credstore.BackendFile {
+		t.Errorf("backend = %q, want file", got)
+	}
+}
+
+// Keychain backend: api_key MUST NOT live in the file; secret is
+// retrievable via credstore.
+func TestAuthSave_KeychainBackend(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("MMB_CONFIG", cfg)
+
+	_, _, err := runMmbCmd(t, []string{
+		"auth", "save",
+		"--profile", "kc-bot",
+		"--api-key", "mmb_keychain_test_key",
+		"--api-url", "https://api.example.com",
+		"--storage", "keychain",
+	}, nil)
+	if err != nil {
+		t.Fatalf("auth save --storage=keychain: %v", err)
+	}
+	parsed, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := parsed.Profiles["kc-bot"]
+	if p.APIKey != "" {
+		t.Errorf("keychain backend MUST NOT leave api_key in file; got %q", p.APIKey)
+	}
+	if p.Backend != credstore.BackendKeychain {
+		t.Errorf("backend = %q, want keychain", p.Backend)
+	}
+	// Round-trip via credstore.
+	got, err := credstore.Get("kc-bot", credstore.BackendKeychain, "")
+	if err != nil {
+		t.Fatalf("credstore.Get: %v", err)
+	}
+	if got != "mmb_keychain_test_key" {
+		t.Errorf("keychain roundtrip = %q", got)
+	}
+	// Client resolution should still surface the secret.
+	c := client.NewWithProfile("kc-bot")
+	if c.APIKey != "mmb_keychain_test_key" {
+		t.Errorf("client APIKey = %q, want secret retrieved from keychain", c.APIKey)
+	}
+	if c.Backend != credstore.BackendKeychain {
+		t.Errorf("client.Backend = %q, want keychain", c.Backend)
+	}
+}
+
+// `mmb auth save --storage=auto` (no --storage flag) defaults to keychain
+// when the keychain is available — which the test environment guarantees
+// via the mock installed in TestMain.
+func TestAuthSave_AutoDefaultsToKeychain(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("MMB_CONFIG", cfg)
+	t.Setenv("MMB_DISABLE_KEYCHAIN", "")
+	t.Setenv("MMB_STORAGE", "")
+
+	_, _, err := runMmbCmd(t, []string{
+		"auth", "save",
+		"--profile", "auto-bot",
+		"--api-key", "mmb_auto_test_key",
+		"--api-url", "https://api.example.com",
+	}, nil)
+	if err != nil {
+		t.Fatalf("auth save (auto): %v", err)
+	}
+	parsed, _ := config.Load()
+	if parsed.Profiles["auto-bot"].Backend != credstore.BackendKeychain {
+		t.Errorf("auto with available keychain should pick keychain; got %q",
+			parsed.Profiles["auto-bot"].Backend)
+	}
+}
+
+// `mmb auth migrate --profile X` moves a file-backed profile's secret
+// to the keychain and clears the file's api_key.
+func TestAuthMigrate_MovesFileBackedProfileToKeychain(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("MMB_CONFIG", cfg)
+
+	// Seed a file-backed profile (legacy shape: Backend == "").
+	f := &config.File{}
+	f.Put("legacy", config.Profile{
+		APIURL: "https://api.example.com",
+		APIKey: "mmb_legacy_secret_long",
+	})
+	if err := f.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := runMmbCmd(t, []string{"auth", "migrate", "--profile", "legacy"}, nil)
+	if err != nil {
+		t.Fatalf("auth migrate: %v", err)
+	}
+	if !strings.Contains(stdout, "migrated → keychain") {
+		t.Errorf("missing migration confirmation: %s", stdout)
+	}
+
+	// File no longer carries the secret.
+	parsed, _ := config.Load()
+	p := parsed.Profiles["legacy"]
+	if p.APIKey != "" {
+		t.Errorf("post-migrate api_key in file = %q; want empty", p.APIKey)
+	}
+	if p.Backend != credstore.BackendKeychain {
+		t.Errorf("post-migrate backend = %q; want keychain", p.Backend)
+	}
+
+	// Secret is now in keychain.
+	got, err := credstore.Get("legacy", credstore.BackendKeychain, "")
+	if err != nil {
+		t.Fatalf("credstore.Get post-migrate: %v", err)
+	}
+	if got != "mmb_legacy_secret_long" {
+		t.Errorf("keychain holds %q, want roundtrip", got)
+	}
+}
+
+// `mmb auth migrate --all` is idempotent: re-running on already-keychained
+// profiles produces "skipped" without errors.
+func TestAuthMigrate_IdempotentOnAlreadyKeychainedProfiles(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("MMB_CONFIG", cfg)
+
+	// First save a keychain-backed profile.
+	if _, _, err := runMmbCmd(t, []string{
+		"auth", "save",
+		"--profile", "kc",
+		"--api-key", "mmb_kc_secret",
+		"--api-url", "https://api.example.com",
+		"--storage", "keychain",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := runMmbCmd(t, []string{"auth", "migrate", "--all"}, nil)
+	if err != nil {
+		t.Fatalf("migrate --all: %v", err)
+	}
+	if !strings.Contains(stdout, "already on keychain — skipped") {
+		t.Errorf("expected idempotent skip, got: %s", stdout)
 	}
 }
 
