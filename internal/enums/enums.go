@@ -20,6 +20,15 @@ import (
 // Mirrors the server's openapi.yaml inboxState schema.
 var InboxStates = []string{"trusted", "quarantined", "rejected"}
 
+// WorkStates is the agent-side work-tracking axis. Orthogonal to
+// the trust state (`InboxStates`) and to read/unread. Mirrors
+// openapi.yaml § WorkState.
+//
+// The agent's loop should poll `?work_state=inbox` for its real work
+// queue (rather than `?unread=true`, which is a human-inbox concept)
+// and commit a terminal transition every time it touches a row.
+var WorkStates = []string{"inbox", "in_progress", "awaiting_reply", "done", "skipped", "blocked", "deferred"}
+
 // DeliverSchemes is the set of --deliver targets supported across commands
 // that produce artifacts. Currently a forward-looking list; principle 10
 // (two-way I/O) is implemented in a later phase.
@@ -47,5 +56,6 @@ func Validate(flag, val string, valid []string) error {
 // under the "enums" key. Keep keys in lower_snake_case for JSON friendliness.
 var InContext = map[string][]string{
 	"inbox_state":     InboxStates,
+	"work_state":      WorkStates,
 	"deliver_scheme":  DeliverSchemes,
 }

@@ -46,6 +46,7 @@ func TestInContext_ExposesEverySharedEnum(t *testing.T) {
 	// from InContext, otherwise agent-context introspection drifts.
 	want := map[string][]string{
 		"inbox_state":    InboxStates,
+		"work_state":     WorkStates,
 		"deliver_scheme": DeliverSchemes,
 	}
 	for k, expected := range want {
