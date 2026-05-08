@@ -1,6 +1,11 @@
 package cmd
 
 import (
+	"fmt"
+	"net/http"
+
+	"github.com/theinventor/monstermailbox-cli/internal/client"
+	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/spf13/cobra"
 )
 
@@ -17,10 +22,6 @@ import (
 //   --body-html       inline HTML
 //   --body-file       plain text from file (HTML doesn't shell-escape well)
 //   --body-html-file  HTML from file
-//
-// History: v0.7 briefly renamed this to `new-message`. Reverted in
-// v0.8 — `new-email` is the canonical name; `new-message` stays as a
-// hidden deprecated alias for one release.
 func newNewEmailCmd() *cobra.Command {
 	var to, subject string
 	var cc, bcc []string
@@ -30,7 +31,43 @@ func newNewEmailCmd() *cobra.Command {
 		Use:   "new-email",
 		Short: "Send a brand-new outbound thread (no reply context)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runNewMessage(cmd, to, subject, cc, bcc, &bf, mf)
+			if to == "" || subject == "" {
+				return exitcode.Wrap(exitcode.Usage,
+					fmt.Errorf("--to and --subject are both required"))
+			}
+			text, html, err := bf.resolve()
+			if err != nil {
+				return err
+			}
+			payload := map[string]any{
+				"to":      to,
+				"subject": subject,
+			}
+			if text != "" {
+				payload["body_text"] = text
+			}
+			if html != "" {
+				payload["body_html"] = html
+			}
+			if len(cc) > 0 {
+				payload["cc"] = cc
+			}
+			if len(bcc) > 0 {
+				payload["bcc"] = bcc
+			}
+
+			if mf.DryRun {
+				return printJSON(cmd.OutOrStdout(),
+					newDryRunEnvelope(http.MethodPost, "/send", payload, mf))
+			}
+
+			cli := client.New()
+			resp, err := cli.DoWithHeaders(http.MethodPost, "/send", payload, nil, mf.Headers())
+			if err != nil {
+				return fmt.Errorf("POST /send: %w", err)
+			}
+			defer resp.Body.Close()
+			return passthroughJSON(cmd.OutOrStdout(), resp)
 		},
 	}
 	c.Flags().StringVar(&to, "to", "", "recipient email — required")

@@ -1,11 +1,6 @@
 // End-to-end tests for `mmb new-email`, the tertiary outbound verb
 // (use only when you're starting a brand-new thread with no reply
-// context). Plus smoke tests that the deprecated `new-message` alias
-// from v0.7 still dispatches to the same code path.
-//
-// File name preserved as new_message_test.go because that's where
-// these tests landed in v0.7; rename in the v0.9 cleanup along with
-// runNewMessage.
+// context).
 package cmd
 
 import (
@@ -80,19 +75,5 @@ func TestNewEmailSendsCcAndBcc(t *testing.T) {
 	bcc, _ := body["bcc"].([]any)
 	if len(bcc) != 1 || bcc[0] != "dave@stripe.com" {
 		t.Errorf("body.bcc MUST carry --bcc; got: %v", bcc)
-	}
-}
-
-func TestNewMessageAliasStillDispatchesToSend(t *testing.T) {
-	// v0.7 briefly named the canonical verb `new-message`. The alias
-	// stays one release so anyone who started using it keeps working.
-	_, cap, err := runCmd(t,
-		[]string{"new-message", "--to", "alice@stripe.com", "--subject", "x", "--body", "y"},
-		202, `{}`)
-	if err != nil {
-		t.Fatalf("deprecated alias MUST still send: %v", err)
-	}
-	if cap.method != http.MethodPost || cap.path != "/send" {
-		t.Errorf("alias MUST POST /send like new-email; got %s %s", cap.method, cap.path)
 	}
 }
