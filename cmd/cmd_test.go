@@ -545,8 +545,8 @@ func TestSendPrintsDeprecationWarning(t *testing.T) {
 	if !strings.Contains(combined, "deprecated") {
 		t.Errorf("send MUST warn that it is deprecated; got: %s", combined)
 	}
-	if !strings.Contains(combined, "new-message") || !strings.Contains(combined, "reply-all") {
-		t.Errorf("deprecation warning MUST point at new-message + reply-all; got: %s", combined)
+	if !strings.Contains(combined, "new-email") || !strings.Contains(combined, "reply-all") {
+		t.Errorf("deprecation warning MUST point at new-email + reply-all; got: %s", combined)
 	}
 }
 
@@ -603,7 +603,7 @@ func TestEveryAPICommandSurfacesEmpty4xxAsAVisibleError(t *testing.T) {
 		{"expect", []string{"expect", "--from", "ceo@x.com", "--subject", "wire"}},
 		{"whitelist_create", []string{"whitelist", "create", "alice@x.com"}},
 		{"send", []string{"send", "--to", "x@y.com", "--subject", "s", "--body", "b"}},
-		{"new_message", []string{"new-message", "--to", "x@y.com", "--subject", "s", "--body", "b"}},
+		{"new_email", []string{"new-email", "--to", "x@y.com", "--subject", "s", "--body", "b"}},
 		// reply-all needs a successful GET /msg/:id BEFORE the POST /send,
 		// so it doesn't fit the single-stub harness this test uses. The
 		// reply-specific tests in reply_all_test.go exercise the 4xx path
@@ -748,7 +748,7 @@ func TestIdempotencyKeyHeaderIsSent(t *testing.T) {
 		argv []string
 	}{
 		{"register", []string{"register", "--address", "x", "--email", "y@z.com", "--idempotency-key", "k-reg"}},
-		{"new_message", []string{"new-message", "--to", "x@y", "--subject", "s", "--body", "b", "--idempotency-key", "k-ne"}},
+		{"new_email", []string{"new-email", "--to", "x@y", "--subject", "s", "--body", "b", "--idempotency-key", "k-ne"}},
 		{"expect", []string{"expect", "--from", "x@y", "--idempotency-key", "k-ex"}},
 		{"whitelist_create", []string{"whitelist", "create", "alice@x.com", "--idempotency-key", "k-wl"}},
 	}
@@ -774,7 +774,7 @@ func TestDryRunSkipsHTTPAndEmitsEnvelope(t *testing.T) {
 		wantPath string
 	}{
 		{"register", []string{"register", "--address", "x", "--email", "y@z.com", "--dry-run"}, "/agents/register"},
-		{"new_message", []string{"new-message", "--to", "a@b.c", "--subject", "s", "--body", "b", "--dry-run"}, "/send"},
+		{"new_email", []string{"new-email", "--to", "a@b.c", "--subject", "s", "--body", "b", "--dry-run"}, "/send"},
 		{"expect", []string{"expect", "--from", "x@y", "--dry-run"}, "/expectations"},
 		{"whitelist_create", []string{"whitelist", "create", "alice@x.com", "--dry-run"}, "/whitelist"},
 	}
@@ -823,7 +823,7 @@ func TestExitCodes_ByHTTPStatusClass(t *testing.T) {
 		{"403_to_Auth", []string{"inbox", "list"}, 403, exitcode.Auth},
 		{"404_to_NotFound", []string{"msg", "get", "x"}, 404, exitcode.NotFound},
 		{"409_to_Conflict", []string{"register", "--address", "x", "--email", "y@z.com"}, 409, exitcode.Conflict},
-		{"422_to_Validation", []string{"new-message", "--to", "x@y.com", "--subject", "s", "--body", "b"}, 422, exitcode.Validation},
+		{"422_to_Validation", []string{"new-email", "--to", "x@y.com", "--subject", "s", "--body", "b"}, 422, exitcode.Validation},
 		{"500_to_Server", []string{"inbox", "list"}, 500, exitcode.Server},
 		{"503_to_Server", []string{"whitelist", "create", "x@y"}, 503, exitcode.Server},
 	}
@@ -847,7 +847,7 @@ func TestExitCodes_UsageErrorExitsTwo(t *testing.T) {
 		name string
 		argv []string
 	}{
-		{"new_message_missing_required", []string{"new-message"}},
+		{"new_email_missing_required", []string{"new-email"}},
 		{"register_missing_required", []string{"register"}},
 		{"expect_missing_from", []string{"expect"}},
 		{"inbox_list_invalid_state", []string{"inbox", "list", "--state", "secret"}},
