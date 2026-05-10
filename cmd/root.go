@@ -74,6 +74,7 @@ func NewRootCmd() *cobra.Command {
 	// spelling of reply-all. Removed in a future cleanup.
 	root.AddCommand(newReplyToEmailAliasCmd())
 	root.AddCommand(newGuidanceCmd())
+	root.AddCommand(newWebhookCmd())
 	root.AddCommand(newAgentProductFeedbackCmd())
 	root.AddCommand(newQuarantineCmd())
 	root.AddCommand(newFeedbackCmd())

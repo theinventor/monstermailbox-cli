@@ -34,6 +34,35 @@ var WorkStates = []string{"inbox", "in_progress", "awaiting_reply", "done", "ski
 // (two-way I/O) is implemented in a later phase.
 var DeliverSchemes = []string{"stdout", "file", "webhook"}
 
+// WebhookWildcard is the special "subscribe to all events in this audience"
+// value the server accepts in place of an explicit list of event names.
+const WebhookWildcard = "*"
+
+// WebhookAgentEvents is the set of agent-audience events `mmb webhook
+// create --event ...` accepts. Owner-audience events (operator alerts)
+// are managed only via the dashboard and are NOT in this list.
+//
+// Authoritative copy is server-side at GET /webhook_events (surfaced
+// via `mmb webhook events`); this list lets the CLI reject typos with
+// the valid set named, without a round-trip.
+var WebhookAgentEvents = []string{
+	"message.received",
+	"message.trusted",
+	"message.quarantined",
+	"message.rejected",
+	"message.released",
+	"message.expired",
+	"outbound.queued",
+	"outbound.scanned",
+	"outbound.approved",
+	"outbound.sent",
+	"outbound.bounced",
+	"whitelist.created",
+	"whitelist.deleted",
+	"expectation.matched",
+	"expectation.expired",
+}
+
 // Validate returns nil if val is in valid, otherwise an error of the form
 //
 //	--<flag> must be one of: a, b, c (got: "x")
@@ -55,7 +84,8 @@ func Validate(flag, val string, valid []string) error {
 // InContext is the map of enum-name → values that `mmb agent-context` emits
 // under the "enums" key. Keep keys in lower_snake_case for JSON friendliness.
 var InContext = map[string][]string{
-	"inbox_state":     InboxStates,
-	"work_state":      WorkStates,
-	"deliver_scheme":  DeliverSchemes,
+	"inbox_state":         InboxStates,
+	"work_state":          WorkStates,
+	"deliver_scheme":      DeliverSchemes,
+	"webhook_agent_event": WebhookAgentEvents,
 }
