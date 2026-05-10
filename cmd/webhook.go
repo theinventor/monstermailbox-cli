@@ -35,6 +35,26 @@ func newWebhookCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "webhook",
 		Short: "Manage this agent's webhooks (mail-flow events delivered to a URL you control)",
+		Long: `Manage this agent's webhooks.
+
+When you don't know which events to pick, pick ONE:
+
+  --event inbox.new
+
+That's the "your inbound mail is ready to read" signal. Subscribe
+to that and treat the webhook as a poke that says "go check the
+inbox now" — most agents need nothing else.
+
+Subscribe to additional events only when you have a concrete
+reason (e.g. outbound.bounced if you need to react to undeliverable
+addresses; outbound.sent for delivery confirmation UIs).
+
+--all-events delivers EVERY event for every state change, including
+events you almost certainly won't act on. Use it only if you're
+building an audit/observability pipeline.
+
+Run 'mmb webhook events' for the full catalog with per-event
+recommendations.`,
 	}
 	c.AddCommand(newWebhookListCmd())
 	c.AddCommand(newWebhookGetCmd())
@@ -102,8 +122,8 @@ type webhookMutationFlags struct {
 func bindWebhookContentFlags(c *cobra.Command, f *webhookMutationFlags, isUpdate bool) {
 	c.Flags().StringVar(&f.Name, "name", "", "human label for the webhook")
 	c.Flags().StringVar(&f.URL, "url", "", "https URL the events POST to")
-	c.Flags().StringSliceVar(&f.Events, "event", nil, "event to subscribe to (repeatable). Use --all-events to subscribe to every agent event including future additions.")
-	c.Flags().BoolVar(&f.AllEvents, "all-events", false, "subscribe to all agent-audience events, present and future")
+	c.Flags().StringSliceVar(&f.Events, "event", nil, "event to subscribe to (repeatable). Most agents want only --event inbox.new (the 'check the inbox' signal). Run `mmb webhook events` for the full catalog.")
+	c.Flags().BoolVar(&f.AllEvents, "all-events", false, "subscribe to all agent-audience events. Only use this for audit/observability pipelines — for normal agents this is firehose-y. Prefer --event inbox.new.")
 	if isUpdate {
 		c.Flags().BoolVar(&f.Active, "active", true, "set active=true (use --active=false to pause)")
 		c.PreRunE = func(cmd *cobra.Command, _ []string) error {
@@ -137,6 +157,24 @@ func newWebhookCreateCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "create",
 		Short: "Create a webhook. Plaintext signing secret is returned ONCE in the response.",
+		Long: `Create a webhook.
+
+Most-common shape — subscribe to the "inbound is ready" signal:
+
+  mmb webhook create \
+    --name "my-receiver" \
+    --url  "https://your-receiver.example.com/mmb" \
+    --event inbox.new
+
+The response includes the plaintext signing secret EXACTLY ONCE.
+Copy it now — the server bcrypts it; you cannot retrieve it later.
+
+Receivers verify each request by:
+  expected = "sha256=" + hmac_sha256(secret, "<X-MMB-Timestamp>.<body>")
+  hmac.compare_digest(expected, "<X-MMB-Signature>")
+…and rejecting requests where |now - timestamp| > 300s.
+
+For other event types, run 'mmb webhook events' first.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if wf.Name == "" {
 				return fmt.Errorf("--name is required")
@@ -311,7 +349,12 @@ func newWebhookDeliveriesCmd() *cobra.Command {
 func newWebhookEventsCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "events",
-		Short: "Catalog of agent-audience webhook events available to subscribe to",
+		Short: "Catalog of agent-audience webhook events (with descriptions + recommendations)",
+		Long: `List every event type you can subscribe to, with a description and
+"recommended_for" label.
+
+When in doubt, subscribe to `+"`inbox.new`"+` only — that's the
+"inbound mail is ready to read" signal most agents actually need.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cli := client.New()
 			resp, err := cli.Do(http.MethodGet, "/webhook_events", nil, nil)

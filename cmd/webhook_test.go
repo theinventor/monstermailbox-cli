@@ -48,7 +48,7 @@ func TestWebhookCreatePostsFullPayload(t *testing.T) {
 		[]string{"webhook", "create",
 			"--name", "prod-receiver",
 			"--url", "https://example.com/hook",
-			"--event", "message.trusted",
+			"--event", "inbox.new",
 			"--event", "outbound.scanned"},
 		201, `{"id":"42","secret":"whsec_aaaaa"}`)
 	if err != nil {
@@ -102,7 +102,7 @@ func TestWebhookCreateRejectsMixingWildcardAndExplicit(t *testing.T) {
 	_, _, err := runCmd(t,
 		[]string{"webhook", "create",
 			"--name", "x", "--url", "https://example.com/h",
-			"--event", "*", "--event", "message.trusted"},
+			"--event", "*", "--event", "inbox.new"},
 		201, `{}`)
 	if err == nil {
 		t.Fatalf("mixing '*' with explicit names MUST error")
@@ -110,7 +110,7 @@ func TestWebhookCreateRejectsMixingWildcardAndExplicit(t *testing.T) {
 }
 
 func TestWebhookCreateRequiresNameAndURL(t *testing.T) {
-	_, _, err := runCmd(t, []string{"webhook", "create", "--event", "message.trusted"}, 201, `{}`)
+	_, _, err := runCmd(t, []string{"webhook", "create", "--event", "inbox.new"}, 201, `{}`)
 	if err == nil {
 		t.Fatalf("create without --name/--url MUST error")
 	}
@@ -129,7 +129,7 @@ func TestWebhookCreateDryRunSkipsHTTP(t *testing.T) {
 	stdout, cap, err := runCmd(t,
 		[]string{"webhook", "create",
 			"--name", "x", "--url", "https://example.com/h",
-			"--event", "message.trusted",
+			"--event", "inbox.new",
 			"--dry-run"},
 		201, `should-never-fire`)
 	if err != nil {
