@@ -312,7 +312,7 @@ data: {"event":"hello"}
 // the one-shot semantic: a single event causes a clean exit, not a
 // reconnect loop.
 func TestInboxWaitEmitsOneEventThenExits(t *testing.T) {
-	body := `event: message.trusted
+	body := `event: inbox.new
 data: {"id":"m1","state":"trusted"}
 
 `
@@ -332,7 +332,7 @@ data: {"id":"m1","state":"trusted"}
 	if err := json.Unmarshal([]byte(line), &ev); err != nil {
 		t.Fatalf("inbox wait line MUST be valid JSON; got %q", line)
 	}
-	if ev["event"] != "message.trusted" {
+	if ev["event"] != "inbox.new" {
 		t.Errorf("event name MUST round-trip; got %v", ev["event"])
 	}
 	data, _ := ev["data"].(map[string]any)
@@ -343,10 +343,10 @@ data: {"id":"m1","state":"trusted"}
 
 // State filter MUST drop non-matching events before they reach stdout.
 func TestInboxWaitStateFilterDropsNonMatching(t *testing.T) {
-	body := `event: message.quarantined
+	body := `event: inbox.quarantined
 data: {"id":"q1","state":"quarantined"}
 
-event: message.trusted
+event: inbox.new
 data: {"id":"t1","state":"trusted"}
 
 `
@@ -369,7 +369,7 @@ func TestInboxWaitSwallowsHeartbeatComments(t *testing.T) {
 	// `wait` would exit on the comment and stdout would be empty.
 	body := `: heartbeat
 
-event: message.trusted
+event: inbox.new
 data: {"id":"t1","state":"trusted"}
 
 `

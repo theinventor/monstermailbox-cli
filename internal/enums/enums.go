@@ -46,21 +46,16 @@ const WebhookWildcard = "*"
 // via `mmb webhook events`); this list lets the CLI reject typos with
 // the valid set named, without a round-trip.
 var WebhookAgentEvents = []string{
-	"message.received",
-	"message.trusted",
-	"message.quarantined",
-	"message.rejected",
-	"message.released",
-	"message.expired",
+	"inbox.arriving",
+	"inbox.new",
+	"inbox.quarantined",
+	"inbox.rejected",
+	"inbox.released",
 	"outbound.queued",
 	"outbound.scanned",
 	"outbound.approved",
 	"outbound.sent",
 	"outbound.bounced",
-	"whitelist.created",
-	"whitelist.deleted",
-	"expectation.matched",
-	"expectation.expired",
 }
 
 // Validate returns nil if val is in valid, otherwise an error of the form
