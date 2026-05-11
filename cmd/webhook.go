@@ -404,7 +404,7 @@ func newWebhookEventsCmd() *cobra.Command {
 		Long: `List every event type you can subscribe to, with a description and
 "recommended_for" label.
 
-When in doubt, subscribe to `+"`inbox.new`"+` only — that's the
+When in doubt, subscribe to ` + "`inbox.new`" + ` only — that's the
 "inbound mail is ready to read" signal most agents actually need.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cli := client.New()
