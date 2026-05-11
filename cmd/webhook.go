@@ -111,12 +111,15 @@ func newWebhookGetCmd() *cobra.Command {
 // webhookMutationFlags carries the create/update flag schema in one
 // place so the two commands can't drift.
 type webhookMutationFlags struct {
-	Name      string
-	URL       string
-	Events    []string
-	AllEvents bool
-	Active    bool
-	activeSet bool
+	Name         string
+	URL          string
+	Events       []string
+	AllEvents    bool
+	Active       bool
+	Headers      []string
+	AuthBearer   string
+	ClearHeaders bool
+	activeSet    bool
 }
 
 func bindWebhookContentFlags(c *cobra.Command, f *webhookMutationFlags, isUpdate bool) {
@@ -124,8 +127,11 @@ func bindWebhookContentFlags(c *cobra.Command, f *webhookMutationFlags, isUpdate
 	c.Flags().StringVar(&f.URL, "url", "", "https URL the events POST to")
 	c.Flags().StringSliceVar(&f.Events, "event", nil, "event to subscribe to (repeatable). Most agents want only --event inbox.new (the 'check the inbox' signal). Run `mmb webhook events` for the full catalog.")
 	c.Flags().BoolVar(&f.AllEvents, "all-events", false, "subscribe to all agent-audience events. Only use this for audit/observability pipelines — for normal agents this is firehose-y. Prefer --event inbox.new.")
+	c.Flags().StringArrayVar(&f.Headers, "header", nil, "delivery header to send with each webhook POST, as 'Name: value' (repeatable)")
+	c.Flags().StringVar(&f.AuthBearer, "auth-bearer", "", "set delivery Authorization: Bearer <token>")
 	if isUpdate {
 		c.Flags().BoolVar(&f.Active, "active", true, "set active=true (use --active=false to pause)")
+		c.Flags().BoolVar(&f.ClearHeaders, "clear-headers", false, "remove all configured delivery auth headers")
 		c.PreRunE = func(cmd *cobra.Command, _ []string) error {
 			f.activeSet = cmd.Flags().Changed("active")
 			return nil
@@ -149,6 +155,32 @@ func validateWebhookEvents(events []string) error {
 		}
 	}
 	return nil
+}
+
+func webhookHeadersFromFlags(wf webhookMutationFlags) (map[string]string, error) {
+	headers := map[string]string{}
+	for _, raw := range wf.Headers {
+		name, value, ok := strings.Cut(raw, ":")
+		if !ok {
+			return nil, fmt.Errorf("--header must be in 'Name: value' form")
+		}
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" {
+			return nil, fmt.Errorf("--header name is required")
+		}
+		if strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n") {
+			return nil, fmt.Errorf("--header cannot contain newlines")
+		}
+		headers[name] = value
+	}
+	if wf.AuthBearer != "" {
+		if strings.ContainsAny(wf.AuthBearer, "\r\n") {
+			return nil, fmt.Errorf("--auth-bearer cannot contain newlines")
+		}
+		headers["Authorization"] = "Bearer " + wf.AuthBearer
+	}
+	return headers, nil
 }
 
 func newWebhookCreateCmd() *cobra.Command {
@@ -189,11 +221,18 @@ For other event types, run 'mmb webhook events' first.`,
 			if err := validateWebhookEvents(events); err != nil {
 				return err
 			}
+			headers, err := webhookHeadersFromFlags(wf)
+			if err != nil {
+				return err
+			}
 
 			body := map[string]any{
 				"name":   wf.Name,
 				"url":    wf.URL,
 				"events": events,
+			}
+			if len(headers) > 0 {
+				body["headers"] = headers
 			}
 			if mf.DryRun {
 				return printJSON(cmd.OutOrStdout(),
@@ -243,8 +282,20 @@ func newWebhookUpdateCmd() *cobra.Command {
 			if wf.activeSet {
 				body["active"] = wf.Active
 			}
+			if wf.ClearHeaders && (len(wf.Headers) > 0 || wf.AuthBearer != "") {
+				return fmt.Errorf("--clear-headers cannot be combined with --header or --auth-bearer")
+			}
+			if wf.ClearHeaders {
+				body["headers"] = map[string]string{}
+			} else if len(wf.Headers) > 0 || wf.AuthBearer != "" {
+				headers, err := webhookHeadersFromFlags(wf)
+				if err != nil {
+					return err
+				}
+				body["headers"] = headers
+			}
 			if len(body) == 0 {
-				return fmt.Errorf("nothing to update — set at least one of --name / --url / --event / --all-events / --active")
+				return fmt.Errorf("nothing to update — set at least one of --name / --url / --event / --all-events / --active / --header / --auth-bearer / --clear-headers")
 			}
 			path := "/webhooks/" + args[0]
 			if mf.DryRun {
@@ -353,7 +404,7 @@ func newWebhookEventsCmd() *cobra.Command {
 		Long: `List every event type you can subscribe to, with a description and
 "recommended_for" label.
 
-When in doubt, subscribe to `+"`inbox.new`"+` only — that's the
+When in doubt, subscribe to ` + "`inbox.new`" + ` only — that's the
 "inbound mail is ready to read" signal most agents actually need.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cli := client.New()
@@ -381,4 +432,3 @@ func normalizeWebhookEvents(events []string, allEvents bool) []string {
 	}
 	return out
 }
-

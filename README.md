@@ -165,12 +165,34 @@ mmb expect         --from <addr> [--subject-regex <regex>] [--purpose <text>] [-
 # Quarantine (agent-side; human-in-the-loop release happens in the dashboard)
 mmb quarantine list [--limit N]
 mmb quarantine escalate <id>     # v1 stub
+
+# Webhooks
+mmb webhook create --name <label> --url <url> --event inbox.new [--auth-bearer <token>] [--header "Name: value"]
+mmb webhook update <id> [--header "x-openclaw-token: <token>"] [--clear-headers]
+mmb webhook test   <id>
 ```
 
 Most commands emit JSON; pipe through `jq` for filtering:
 
 ```sh
 mmb inbox list --state trusted | jq '.messages[].subject'
+```
+
+## Webhook Auth Headers
+
+Receivers such as OpenClaw/AlphaClaw can require `Authorization: Bearer ...`
+or `x-openclaw-token` headers and reject query-string tokens. Configure those
+as delivery headers; MonsterMailbox encrypts the values at rest and redacts
+them from `webhook get/list` responses.
+
+```sh
+mmb webhook create \
+  --name openclaw \
+  --url https://openclaw.example/hooks/mmb \
+  --event inbox.new \
+  --auth-bearer "$WEBHOOK_TOKEN"
+
+mmb webhook update <id> --header "x-openclaw-token: $WEBHOOK_TOKEN"
 ```
 
 ## What the CLI does NOT do
@@ -237,6 +259,15 @@ cli/mmb/
         ├── config.go          ← profile load/save (mode 0600, atomic writes)
         └── config_test.go
 ```
+
+## OpenClaw skill
+
+The official OpenClaw skill draft lives at
+[`skills/monstermailbox/`](skills/monstermailbox/). It is kept
+public-safe and should not contain API keys, private inboxes, customer
+data, local deployment paths, or unpublished plans.
+
+The intended ClawHub slug is `monstermailbox`.
 
 ## Design principles
 
