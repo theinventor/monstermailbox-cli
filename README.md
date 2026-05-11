@@ -241,13 +241,11 @@ cli/mmb/
 ## OpenClaw skill
 
 The official OpenClaw skill draft lives at
-[`skills/monstermailbox-mmb/`](skills/monstermailbox-mmb/). It is kept
+[`skills/monstermailbox/`](skills/monstermailbox/). It is kept
 public-safe and should not contain API keys, private inboxes, customer
 data, local deployment paths, or unpublished plans.
 
-Before publishing to ClawHub, review
-[`skills/monstermailbox-mmb/references/publishing.md`](skills/monstermailbox-mmb/references/publishing.md).
-The intended public slug is `monstermailbox-mmb`.
+The intended ClawHub slug is `monstermailbox`.
 
 ## Design principles
 
