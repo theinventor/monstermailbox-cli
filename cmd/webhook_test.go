@@ -70,6 +70,28 @@ func TestWebhookCreatePostsFullPayload(t *testing.T) {
 	}
 }
 
+func TestWebhookCreatePostsDeliveryHeaders(t *testing.T) {
+	_, cap, err := runCmd(t,
+		[]string{"webhook", "create",
+			"--name", "openclaw",
+			"--url", "https://hooks.example.com/mmb",
+			"--event", "inbox.new",
+			"--auth-bearer", "fake-token",
+			"--header", "x-openclaw-token: fake-api-token"},
+		201, `{"id":"42"}`)
+	if err != nil {
+		t.Fatalf("webhook create returned error: %v", err)
+	}
+	body := decodeBody(t, cap.body)
+	headers, _ := body["headers"].(map[string]any)
+	if headers["Authorization"] != "Bearer fake-token" {
+		t.Errorf("--auth-bearer MUST set Authorization bearer header; got: %v", headers)
+	}
+	if headers["x-openclaw-token"] != "fake-api-token" {
+		t.Errorf("--header MUST forward custom delivery header; got: %v", headers)
+	}
+}
+
 func TestWebhookCreateAllEventsCollapsesToWildcard(t *testing.T) {
 	_, cap, _ := runCmd(t,
 		[]string{"webhook", "create",
@@ -173,6 +195,39 @@ func TestWebhookUpdateForwardsActiveFalseExplicitly(t *testing.T) {
 	v, ok := body["active"]
 	if !ok || v != false {
 		t.Errorf("--active=false MUST forward active:false; got: %v (present=%v)", v, ok)
+	}
+}
+
+func TestWebhookUpdateCanReplaceDeliveryHeaders(t *testing.T) {
+	_, cap, _ := runCmd(t,
+		[]string{"webhook", "update", "42", "--header", "x-openclaw-token: fake-token"},
+		200, `{"id":"42"}`)
+	body := decodeBody(t, cap.body)
+	headers, _ := body["headers"].(map[string]any)
+	if headers["x-openclaw-token"] != "fake-token" {
+		t.Errorf("update MUST forward delivery headers; got: %v", headers)
+	}
+}
+
+func TestWebhookUpdateCanClearDeliveryHeaders(t *testing.T) {
+	_, cap, _ := runCmd(t,
+		[]string{"webhook", "update", "42", "--clear-headers"},
+		200, `{"id":"42"}`)
+	body := decodeBody(t, cap.body)
+	headers, ok := body["headers"].(map[string]any)
+	if !ok || len(headers) != 0 {
+		t.Errorf("--clear-headers MUST send empty headers object; got: %v", body["headers"])
+	}
+}
+
+func TestWebhookHeaderRequiresColon(t *testing.T) {
+	_, _, err := runCmd(t,
+		[]string{"webhook", "create",
+			"--name", "x", "--url", "https://example.com/h",
+			"--event", "inbox.new", "--header", "Authorization"},
+		201, `{}`)
+	if err == nil {
+		t.Fatalf("--header without colon MUST error")
 	}
 }
 
