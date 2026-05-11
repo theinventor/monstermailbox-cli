@@ -238,6 +238,17 @@ cli/mmb/
         └── config_test.go
 ```
 
+## OpenClaw skill
+
+The official OpenClaw skill draft lives at
+[`skills/monstermailbox-mmb/`](skills/monstermailbox-mmb/). It is kept
+public-safe and should not contain API keys, private inboxes, customer
+data, local deployment paths, or unpublished plans.
+
+Before publishing to ClawHub, review
+[`skills/monstermailbox-mmb/references/publishing.md`](skills/monstermailbox-mmb/references/publishing.md).
+The intended public slug is `monstermailbox-mmb`.
+
 ## Design principles
 
 This CLI follows the **[10 Principles for Agent-Native CLIs](https://trevinsays.com/p/10-principles-for-agent-native-clis)** by
