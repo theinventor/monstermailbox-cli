@@ -8,9 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/theinventor/monstermailbox-cli/internal/client"
-	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/spf13/cobra"
+	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 )
 
 // `mmb agent-product-feedback "<text>"` →
@@ -23,9 +22,9 @@ import (
 // note directly to the project's maintainers.
 //
 // Input forms (in priority order):
-//   1. Positional arg:    mmb agent-product-feedback "the policy editor is great"
-//   2. --text flag:       mmb agent-product-feedback --text="..."
-//   3. stdin via "-":     echo "..." | mmb agent-product-feedback -
+//  1. Positional arg:    mmb agent-product-feedback "the policy editor is great"
+//  2. --text flag:       mmb agent-product-feedback --text="..."
+//  3. stdin via "-":     echo "..." | mmb agent-product-feedback -
 //
 // At least one must be supplied; mixed forms are rejected so the
 // agent never wonders which one won.
@@ -67,7 +66,7 @@ response. Body is capped at 4 KB by the server.`,
 					newDryRunEnvelope(http.MethodPost, "/agent_product_feedback", payload, mf))
 			}
 
-			cli := client.New()
+			cli := newAPIClient()
 			resp, err := cli.DoWithHeaders(http.MethodPost, "/agent_product_feedback", payload, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("POST /agent_product_feedback: %w", err)

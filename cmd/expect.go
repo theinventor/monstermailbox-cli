@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/theinventor/monstermailbox-cli/internal/client"
-	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/spf13/cobra"
+	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 )
 
 // `mmb expect --from <addr> --subject <pattern> [--ttl <duration>]`
@@ -40,7 +39,7 @@ func newExpectCmd() *cobra.Command {
 					newDryRunEnvelope(http.MethodPost, "/expectations", body, mf))
 			}
 
-			cli := client.New()
+			cli := newAPIClient()
 			resp, err := cli.DoWithHeaders(http.MethodPost, "/expectations", body, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("POST /expectations: %w", err)
@@ -49,9 +48,9 @@ func newExpectCmd() *cobra.Command {
 			return passthroughJSON(cmd.OutOrStdout(), resp)
 		},
 	}
-	c.Flags().StringVar(&from,    "from",    "", "expected sender (email or domain) — required")
+	c.Flags().StringVar(&from, "from", "", "expected sender (email or domain) — required")
 	c.Flags().StringVar(&subject, "subject", "", "subject substring to match (optional)")
-	c.Flags().StringVar(&ttl,     "ttl",     "", "expectation lifetime (e.g. 24h, 7d) — server-default if omitted")
+	c.Flags().StringVar(&ttl, "ttl", "", "expectation lifetime (e.g. 24h, 7d) — server-default if omitted")
 	bindMutationFlags(c, &mf)
 	return c
 }

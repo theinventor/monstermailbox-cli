@@ -29,7 +29,7 @@ const EnvFeedbackEndpoint = "MONSTERMAILBOX_FEEDBACK_ENDPOINT"
 // feedbackEntry is one row in the local feedback.jsonl ledger and
 // the body shape POSTed to the upstream endpoint when configured.
 type feedbackEntry struct {
-	Timestamp  string `json:"timestamp"`     // RFC3339, UTC
+	Timestamp  string `json:"timestamp"` // RFC3339, UTC
 	CLIVersion string `json:"cli_version"`
 	Profile    string `json:"profile,omitempty"`
 	Text       string `json:"text"`
@@ -280,7 +280,7 @@ func feedbackPath() string {
 // Used to tag feedback entries so a multi-profile user can see
 // which agent identity reported what.
 func activeProfileName() string {
-	c := client.New()
+	c := newAPIClient()
 	if strings.HasPrefix(c.Source, "profile:") {
 		return strings.TrimPrefix(c.Source, "profile:")
 	}

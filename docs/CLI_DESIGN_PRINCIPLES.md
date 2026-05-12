@@ -91,7 +91,8 @@ Save/use/list/show/delete subcommands; `--profile` as a persistent
 flag; precedence: explicit flag > env var > config default.
 
 > **Where**: `cmd/auth.go`, `internal/config/`. Available profiles
-> surface via `mmb agent-context.available_profiles`.
+> surface via `mmb agent-context.available_profiles`; the root
+> `--profile` flag surfaces via `mmb agent-context.global_flags`.
 
 #### 10. Two-way I/O
 - Output sinks: `--deliver=stdout|file:|webhook:` (TODO; see TODO.md).

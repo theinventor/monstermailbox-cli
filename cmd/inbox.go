@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/theinventor/monstermailbox-cli/internal/client"
 	"github.com/theinventor/monstermailbox-cli/internal/enums"
 	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/theinventor/monstermailbox-cli/internal/sse"
-	"github.com/spf13/cobra"
 )
 
 // inbox is the parent for `inbox list`, `inbox watch`, `inbox wait`.
@@ -58,7 +58,7 @@ func newInboxListCmd() *cobra.Command {
 			if err := enums.Validate("work-state", workState, enums.WorkStates); err != nil {
 				return exitcode.Wrap(exitcode.Usage, err)
 			}
-			cli := client.New()
+			cli := newAPIClient()
 			q := url.Values{}
 			if state != "" {
 				q.Set("state", state)
@@ -254,10 +254,10 @@ func newInboxWaitCmd() *cobra.Command {
 				return exitcode.Wrap(exitcode.Usage, err)
 			}
 			return runEventStream(cmd, eventStreamOptions{
-				stopOnFirst:   true,
-				stateFilter:   state,
+				stopOnFirst:     true,
+				stateFilter:     state,
 				overallDeadline: time.Now().Add(timeout),
-				maxReconnects: 0,
+				maxReconnects:   0,
 			})
 		},
 	}
@@ -270,8 +270,8 @@ func newInboxWaitCmd() *cobra.Command {
 // `inbox watch` (forever) and `inbox wait` (one-shot) are the same
 // loop with different exit conditions:
 //
-//   • watch       → stopOnFirst=false, overallDeadline=zero
-//   • wait        → stopOnFirst=true,  overallDeadline=now+timeout
+//   - watch       → stopOnFirst=false, overallDeadline=zero
+//   - wait        → stopOnFirst=true,  overallDeadline=now+timeout
 type eventStreamOptions struct {
 	stopOnFirst     bool
 	stateFilter     string
@@ -285,7 +285,7 @@ type eventStreamOptions struct {
 // matching event has been emitted; honors overallDeadline for the
 // `--timeout` shape.
 func runEventStream(cmd *cobra.Command, opts eventStreamOptions) error {
-	cli := client.New()
+	cli := newAPIClient()
 	out := cmd.OutOrStdout()
 
 	// Backoff window for reconnects. Capped at 30s — long enough that

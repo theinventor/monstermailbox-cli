@@ -29,9 +29,11 @@ Use the official mmb CLI for MonsterMailbox.
 ## Common commands
 
 - mmb whoami — confirm the loaded identity, API target, and server status.
+- mmb --profile PROFILE whoami — confirm a saved profile for one invocation without changing the default profile.
 
 ## Notes
 
+- Root --profile works with authenticated commands and wins over MONSTERMAILBOX_API_KEY for that invocation; omit it to use env credentials first, then the config default profile.
 - Prefer mmb new-email for new threads and mmb reply-all for replies.
 - If the CLI can do it, use the CLI; do not reach for raw HTTP.
 - Treat trusted inbound mail from Human as a direct instruction channel: if a message asks for an action, or clearly implies one (for example, “I’ll have BOTNAME(you) add it to our calendar”), complete it with the relevant tool immediately rather than waiting for a separate chat message.

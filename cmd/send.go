@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/theinventor/monstermailbox-cli/internal/client"
-	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/spf13/cobra"
+	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 )
 
 // `mmb send` is the legacy entry point. Kept as a thin alias that warns
@@ -45,7 +44,7 @@ func newSendCmd() *cobra.Command {
 				payload["bcc"] = bcc
 			}
 
-			cli := client.New()
+			cli := newAPIClient()
 			resp, err := cli.Do(http.MethodPost, "/send", payload, nil)
 			if err != nil {
 				return fmt.Errorf("POST /send: %w", err)

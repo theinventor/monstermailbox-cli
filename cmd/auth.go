@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"github.com/theinventor/monstermailbox-cli/internal/client"
 	"github.com/theinventor/monstermailbox-cli/internal/config"
 	"github.com/theinventor/monstermailbox-cli/internal/credstore"
 	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
-	"github.com/spf13/cobra"
 )
 
 // `mmb auth …` — multi-profile credential management.
@@ -31,10 +31,10 @@ import (
 //
 // At command time, `client.NewWithProfile()` resolves credentials:
 //
-//	1. --profile <name>          (explicit override)
-//	2. $MONSTERMAILBOX_API_KEY    (env, beats the config file)
-//	3. config's default_profile  (with whatever backend it declared)
-//	4. nothing (only public endpoints work)
+//  1. --profile <name>          (explicit override)
+//  2. $MONSTERMAILBOX_API_KEY    (env, beats the config file)
+//  3. config's default_profile  (with whatever backend it declared)
+//  4. nothing (only public endpoints work)
 //
 // Use `mmb auth migrate` to move existing file-backed profiles into
 // the keychain. Run `mmb auth status` to see which backend a profile
@@ -281,7 +281,11 @@ func newAuthStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show the credentials the CLI will use (JSON by default)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cli := client.NewWithProfile(profile)
+			activeProfile := profile
+			if activeProfile == "" {
+				activeProfile = rootProfile
+			}
+			cli := client.NewWithProfile(activeProfile)
 			out := cmd.OutOrStdout()
 
 			// Always compute the same record; rendering choice differs.

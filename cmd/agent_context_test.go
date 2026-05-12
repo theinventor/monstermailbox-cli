@@ -132,6 +132,21 @@ func TestAgentContext_EnumeratesExitCodes(t *testing.T) {
 	}
 }
 
+func TestAgentContext_ExposesGlobalProfileFlag(t *testing.T) {
+	ctx := runAgentContext(t)
+	flags, ok := ctx["global_flags"].(map[string]any)
+	if !ok {
+		t.Fatalf("global_flags MUST be present; got %T", ctx["global_flags"])
+	}
+	profile, ok := flags["--profile"].(map[string]any)
+	if !ok {
+		t.Fatalf("global_flags MUST include --profile; got %v", flags)
+	}
+	if profile["type"] != "string" || profile["usage"] == nil {
+		t.Errorf("--profile entry MUST include string type and usage; got %v", profile)
+	}
+}
+
 // Saved profile names MUST surface so agents can pass --profile
 // without parsing config.json directly.
 func TestAgentContext_ListsSavedProfiles(t *testing.T) {

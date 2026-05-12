@@ -5,10 +5,9 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/theinventor/monstermailbox-cli/internal/client"
+	"github.com/spf13/cobra"
 	"github.com/theinventor/monstermailbox-cli/internal/enums"
 	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
-	"github.com/spf13/cobra"
 )
 
 // `mmb msg get <id>` → GET /msg/{id}.
@@ -60,7 +59,7 @@ func newMsgGetCmd() *cobra.Command {
 		Short: "Get the full sanitized message JSON for <id>",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cli := client.New()
+			cli := newAPIClient()
 			q := url.Values{}
 			if peek {
 				q.Set("peek", "true")
@@ -88,7 +87,7 @@ func newMsgShowAliasCmd() *cobra.Command {
 		Hidden:     true,
 		Deprecated: "use `mmb msg get` instead",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cli := client.New()
+			cli := newAPIClient()
 			q := url.Values{}
 			if peek {
 				q.Set("peek", "true")
@@ -233,7 +232,7 @@ func doWorkStateUpdate(cmd *cobra.Command, id, workState, expected, note, claime
 			newDryRunEnvelope(http.MethodPatch, path, body, mf))
 	}
 
-	cli := client.New()
+	cli := newAPIClient()
 	resp, err := cli.DoWithHeaders(http.MethodPatch, path, body, nil, mf.Headers())
 	if err != nil {
 		return fmt.Errorf("PATCH %s: %w", path, err)

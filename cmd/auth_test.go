@@ -59,6 +59,33 @@ func TestAuth_ProfileFlagWinsOverEnv(t *testing.T) {
 	}
 }
 
+func TestAuth_MissingExplicitProfileDoesNotFallBackToEnv(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("MMB_CONFIG", cfg)
+	t.Setenv("MONSTERMAILBOX_API_KEY", "ENV_KEY_BUT_IGNORED")
+	t.Setenv("MONSTERMAILBOX_API_URL", "https://env.example.com")
+
+	f := &config.File{}
+	f.Put("alpha", config.Profile{
+		APIURL: "https://alpha.example.com",
+		APIKey: "PROFILE_ALPHA_KEY_LONG_ENOUGH",
+	})
+	if err := f.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	c := client.NewWithProfile("missing")
+	if c.APIKey != "" {
+		t.Errorf("missing explicit --profile must not fall back to env/default API key; got %q", c.APIKey)
+	}
+	if c.Source != "" {
+		t.Errorf("missing explicit --profile source = %q, want empty", c.Source)
+	}
+	if c.BaseURL != "https://env.example.com" {
+		t.Errorf("missing explicit --profile should still honor env API URL for diagnostics; got %q", c.BaseURL)
+	}
+}
+
 // Resolution: when no --profile, env wins over config default.
 func TestAuth_EnvWinsOverConfigDefault(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "config.json")

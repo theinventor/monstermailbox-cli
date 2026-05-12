@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/theinventor/monstermailbox-cli/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -67,7 +66,7 @@ func whitelistCreateRunE(mf *mutationFlags) func(*cobra.Command, []string) error
 				newDryRunEnvelope(http.MethodPost, "/whitelist", body, *mf))
 		}
 
-		cli := client.New()
+		cli := newAPIClient()
 		resp, err := cli.DoWithHeaders(http.MethodPost, "/whitelist", body, nil, mf.Headers())
 		if err != nil {
 			return fmt.Errorf("POST /whitelist: %w", err)

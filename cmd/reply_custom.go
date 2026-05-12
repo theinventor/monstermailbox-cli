@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/theinventor/monstermailbox-cli/internal/client"
-	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/spf13/cobra"
+	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 )
 
 // `mmb reply-not-all-with-custom-recipients <id> --to ...` — secondary
@@ -56,7 +55,7 @@ same as reply-all.`,
 				return err
 			}
 
-			cli := client.New()
+			cli := newAPIClient()
 			orig, err := fetchOriginalMessage(cli, messageID)
 			if err != nil {
 				return err
