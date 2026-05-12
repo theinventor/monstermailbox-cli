@@ -11,10 +11,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/theinventor/monstermailbox-cli/internal/client"
+	"github.com/theinventor/monstermailbox-cli/internal/config"
 	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 )
 
@@ -165,6 +167,65 @@ func TestWhoamiHitsVersionEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "mmb_test") || !strings.Contains(stdout, "7890") {
 		t.Errorf("whoami stdout SHOULD include the masked fingerprint; got: %s", stdout)
+	}
+}
+
+func TestWhoamiRootProfileSelectsSavedProfileForSingleInvocation(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("MMB_CONFIG", cfg)
+	t.Setenv(client.EnvAPIKey, "ENV_KEY_BUT_IGNORED")
+	t.Setenv(client.EnvAPIURL, "https://env.example.com")
+
+	cap := &captured{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.hits++
+		cap.method = r.Method
+		cap.path = r.URL.Path
+		cap.authHeader = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"version":"v0.1.0"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	f := &config.File{}
+	f.Put("default", config.Profile{
+		APIURL:       srv.URL,
+		APIKey:       "DEFAULT_PROFILE_KEY_LONG",
+		AgentAddress: "default@monstermailbox.com",
+	})
+	f.Put("product", config.Profile{
+		APIURL:       srv.URL,
+		APIKey:       "PRODUCT_PROFILE_KEY_LONG",
+		AgentAddress: "product@monstermailbox.com",
+	})
+	if err := f.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	root := NewRootCmd()
+	out := &bytes.Buffer{}
+	root.SetOut(out)
+	root.SetErr(out)
+	root.SetArgs([]string{"--profile", "product", "whoami"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("whoami returned error: %v", err)
+	}
+	if cap.method != http.MethodGet || cap.path != "/version" {
+		t.Errorf("expected GET /version; got %s %s", cap.method, cap.path)
+	}
+	if cap.authHeader != "Bearer PRODUCT_PROFILE_KEY_LONG" {
+		t.Errorf("--profile product should select product credentials; got auth %q", cap.authHeader)
+	}
+	if !strings.Contains(out.String(), "product@monstermailbox.com") {
+		t.Errorf("whoami should show selected profile address; got %s", out.String())
+	}
+
+	after, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.DefaultProfile != "default" {
+		t.Errorf("--profile must not change default_profile; got %q", after.DefaultProfile)
 	}
 }
 
@@ -679,10 +740,10 @@ func TestEveryAPICommandPrintsBodyAndStillErrorsOnNon2xx(t *testing.T) {
 // any specific API command's flag plumbing.
 func TestPassthroughJSONStatusCodeClassification(t *testing.T) {
 	cases := []struct {
-		status      int
-		body        string
-		wantErr     bool
-		wantStdout  string // substring expected on stdout (or "" for "any")
+		status     int
+		body       string
+		wantErr    bool
+		wantStdout string // substring expected on stdout (or "" for "any")
 	}{
 		// 2xx — success path. Body prints; no error.
 		{200, `{"ok":true}`, false, `"ok": true`},
@@ -695,7 +756,7 @@ func TestPassthroughJSONStatusCodeClassification(t *testing.T) {
 		{401, `{"error":"unauthorized"}`, true, "unauthorized"},
 		{403, `{"error":"forbidden"}`, true, "forbidden"},
 		{404, `{"error":"not_found"}`, true, "not_found"},
-		{405, ``, true, ""},                        // The v0.2.0 bug shape.
+		{405, ``, true, ""}, // The v0.2.0 bug shape.
 		{409, `{"error":"conflict"}`, true, "conflict"},
 		{422, `{"error":"validation_failed"}`, true, "validation_failed"},
 

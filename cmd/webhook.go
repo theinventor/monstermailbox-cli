@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/theinventor/monstermailbox-cli/internal/client"
 	"github.com/theinventor/monstermailbox-cli/internal/enums"
 )
 
@@ -73,7 +72,7 @@ func newWebhookListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List this agent's webhooks",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cli := client.New()
+			cli := newAPIClient()
 			q := url.Values{}
 			if limit > 0 {
 				q.Set("limit", fmt.Sprintf("%d", limit))
@@ -96,7 +95,7 @@ func newWebhookGetCmd() *cobra.Command {
 		Short: "Get one webhook by id",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cli := client.New()
+			cli := newAPIClient()
 			resp, err := cli.Do(http.MethodGet, "/webhooks/"+args[0], nil, nil)
 			if err != nil {
 				return fmt.Errorf("GET /webhooks/%s: %w", args[0], err)
@@ -238,7 +237,7 @@ For other event types, run 'mmb webhook events' first.`,
 				return printJSON(cmd.OutOrStdout(),
 					newDryRunEnvelope(http.MethodPost, "/webhooks", body, mf))
 			}
-			cli := client.New()
+			cli := newAPIClient()
 			resp, err := cli.DoWithHeaders(http.MethodPost, "/webhooks", body, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("POST /webhooks: %w", err)
@@ -302,7 +301,7 @@ func newWebhookUpdateCmd() *cobra.Command {
 				return printJSON(cmd.OutOrStdout(),
 					newDryRunEnvelope(http.MethodPatch, path, body, mf))
 			}
-			cli := client.New()
+			cli := newAPIClient()
 			resp, err := cli.DoWithHeaders(http.MethodPatch, path, body, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("PATCH %s: %w", path, err)
@@ -332,7 +331,7 @@ func newWebhookDeleteCmd() *cobra.Command {
 				return printJSON(cmd.OutOrStdout(),
 					newDryRunEnvelope(http.MethodDelete, path, nil, mf))
 			}
-			cli := client.New()
+			cli := newAPIClient()
 			resp, err := cli.DoWithHeaders(http.MethodDelete, path, nil, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("DELETE %s: %w", path, err)
@@ -359,7 +358,7 @@ func newWebhookTestCmd() *cobra.Command {
 				return printJSON(cmd.OutOrStdout(),
 					newDryRunEnvelope(http.MethodPost, path, nil, mf))
 			}
-			cli := client.New()
+			cli := newAPIClient()
 			resp, err := cli.DoWithHeaders(http.MethodPost, path, nil, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("POST %s: %w", path, err)
@@ -379,7 +378,7 @@ func newWebhookDeliveriesCmd() *cobra.Command {
 		Short: "List recent delivery attempts for a webhook",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cli := client.New()
+			cli := newAPIClient()
 			q := url.Values{}
 			if limit > 0 {
 				q.Set("limit", fmt.Sprintf("%d", limit))
@@ -407,7 +406,7 @@ func newWebhookEventsCmd() *cobra.Command {
 When in doubt, subscribe to ` + "`inbox.new`" + ` only — that's the
 "inbound mail is ready to read" signal most agents actually need.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cli := client.New()
+			cli := newAPIClient()
 			resp, err := cli.Do(http.MethodGet, "/webhook_events", nil, nil)
 			if err != nil {
 				return fmt.Errorf("GET /webhook_events: %w", err)

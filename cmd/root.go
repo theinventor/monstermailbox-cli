@@ -11,6 +11,7 @@ import (
 	"runtime/debug"
 
 	"github.com/spf13/cobra"
+	"github.com/theinventor/monstermailbox-cli/internal/client"
 )
 
 // Version is set at link-time via -ldflags "-X github.com/theinventor/monstermailbox-cli/cmd.Version=v0.x.y"
@@ -24,6 +25,8 @@ import (
 // "(devel)" in BuildInfo, which we treat as the dev sentinel so local
 // development still skips the updater.
 var Version = "dev"
+
+var rootProfile string
 
 func init() {
 	if Version != "dev" {
@@ -44,6 +47,7 @@ func init() {
 // (rather than a package-level var) so tests can build a fresh tree
 // per test, with their own io.Writer for stdout/stderr capture.
 func NewRootCmd() *cobra.Command {
+	rootProfile = ""
 	root := &cobra.Command{
 		Use:           "mmb",
 		Short:         "monstermailbox CLI — operate an agent mailbox from the terminal",
@@ -52,6 +56,8 @@ func NewRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+
+	root.PersistentFlags().StringVar(&rootProfile, "profile", "", "saved auth profile to use for this invocation")
 
 	root.AddCommand(newAgentContextCmd())
 	root.AddCommand(newAuthCmd())
@@ -80,4 +86,8 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newFeedbackCmd())
 
 	return root
+}
+
+func newAPIClient() *client.Client {
+	return client.NewWithProfile(rootProfile)
 }

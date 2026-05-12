@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/theinventor/monstermailbox-cli/internal/client"
-	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/spf13/cobra"
+	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 )
 
 // `mmb new-email --to <addr> --subject <s> --body <s>` → POST /send.
@@ -18,10 +17,11 @@ import (
 // threading headers stitch correctly.
 //
 // Body forms (at least one required):
-//   --body            inline plain text
-//   --body-html       inline HTML
-//   --body-file       plain text from file (HTML doesn't shell-escape well)
-//   --body-html-file  HTML from file
+//
+//	--body            inline plain text
+//	--body-html       inline HTML
+//	--body-file       plain text from file (HTML doesn't shell-escape well)
+//	--body-html-file  HTML from file
 func newNewEmailCmd() *cobra.Command {
 	var to, subject string
 	var cc, bcc []string
@@ -61,7 +61,7 @@ func newNewEmailCmd() *cobra.Command {
 					newDryRunEnvelope(http.MethodPost, "/send", payload, mf))
 			}
 
-			cli := client.New()
+			cli := newAPIClient()
 			resp, err := cli.DoWithHeaders(http.MethodPost, "/send", payload, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("POST /send: %w", err)

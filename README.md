@@ -85,7 +85,7 @@ At every command invocation the CLI resolves credentials in this order:
 
 | # | Source | Notes |
 | - | --- | --- |
-| 1 | `--profile <name>` flag (where supported) | Explicit override |
+| 1 | Root `--profile <name>` flag | Explicit per-invocation override for authenticated commands; does not change `default_profile` |
 | 2 | `MONSTERMAILBOX_API_KEY` env var | Beats persisted default. Set `MONSTERMAILBOX_API_URL` too |
 | 3 | Default profile in `~/.config/mmb/config.json` | The "I logged in once and forgot about it" path |
 | 4 | None — only public endpoints work | `/health`, `/version`, `/agents/register` |
@@ -128,11 +128,15 @@ mmb auth list                     # list saved profiles, default starred
 mmb auth use other-bot            # change the default profile
 mmb auth status --profile X       # inspect a specific profile
 mmb auth logout [--profile X]     # remove a profile
+mmb --profile other-bot whoami    # use a profile for one command only
 ```
 
 ## Commands
 
 ```text
+Global flags:
+mmb --profile <name> <command>     # use saved profile for this invocation only
+
 # Auth
 mmb auth login    --address <local> --email <owner> [--storage keychain|file|auto]
 mmb auth save     --profile <name> --api-key <key> [--api-url <url>] [--storage keychain|file|auto]

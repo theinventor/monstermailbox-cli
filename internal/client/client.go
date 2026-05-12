@@ -94,12 +94,18 @@ func NewWithProfile(profile string) *Client {
 
 	// Explicit --profile: must exist or we fall through to nothing (the
 	// caller will see "auth required" on the first authenticated call).
+	// Do not silently use env/default credentials for a misspelled
+	// profile; that would run the command as the wrong identity.
 	if profile != "" {
 		if f, err := config.Load(); err == nil {
 			if p, ok := f.Get(profile); ok {
 				return c.loadFromProfile(profile, p).fillDefaults()
 			}
 		}
+		if envURL := os.Getenv(EnvAPIURL); envURL != "" {
+			c.BaseURL = strings.TrimRight(envURL, "/")
+		}
+		return c.fillDefaults()
 	}
 
 	// ENV var beats the persisted default.
@@ -219,4 +225,3 @@ func (c *Client) DoWithHeaders(method, path string, body any, query url.Values, 
 
 	return c.HTTPClient.Do(req)
 }
-

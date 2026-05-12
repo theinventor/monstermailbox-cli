@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
-	"github.com/theinventor/monstermailbox-cli/internal/client"
-	"github.com/theinventor/monstermailbox-cli/internal/updater"
 	"github.com/spf13/cobra"
+	"github.com/theinventor/monstermailbox-cli/internal/config"
+	"github.com/theinventor/monstermailbox-cli/internal/updater"
 )
 
 // whoami emits identity-relevant context: which API the CLI is
@@ -20,7 +21,7 @@ func newWhoamiCmd() *cobra.Command {
 		Use:   "whoami",
 		Short: "Print the loaded API identity + API target + server version",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c := client.New()
+			c := newAPIClient()
 
 			resp, err := c.Do(http.MethodGet, "/version", nil, nil)
 			if err != nil {
@@ -39,9 +40,22 @@ func newWhoamiCmd() *cobra.Command {
 			out := map[string]any{
 				"api_url":        c.BaseURL,
 				"api_key":        c.MaskedAPIKey(),
+				"source":         c.Source,
 				"cli_version":    Version,
 				"server_version": version,
 				"server_status":  resp.StatusCode,
+			}
+			if c.Source == "" {
+				out["source"] = nil
+			}
+			if profile, p, ok := resolvedProfile(c.Source); ok {
+				out["profile"] = profile
+				if p.AgentAddress != "" {
+					out["agent_address"] = p.AgentAddress
+				}
+				if p.OwnerEmail != "" {
+					out["owner_email"] = p.OwnerEmail
+				}
 			}
 
 			// Surface update availability — agents read whoami output
@@ -61,6 +75,20 @@ func newWhoamiCmd() *cobra.Command {
 			return printJSON(cmd.OutOrStdout(), out)
 		},
 	}
+}
+
+func resolvedProfile(source string) (string, *config.Profile, bool) {
+	const prefix = "profile:"
+	if !strings.HasPrefix(source, prefix) {
+		return "", nil, false
+	}
+	name := strings.TrimPrefix(source, prefix)
+	f, err := config.Load()
+	if err != nil {
+		return "", nil, false
+	}
+	p, ok := f.Get(name)
+	return name, p, ok
 }
 
 func printJSON(w io.Writer, v any) error {

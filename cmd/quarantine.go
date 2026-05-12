@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/theinventor/monstermailbox-cli/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -38,7 +37,7 @@ func newQuarantineListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List quarantined messages awaiting review",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cli := client.New()
+			cli := newAPIClient()
 			q := url.Values{}
 			q.Set("state", "quarantined")
 			if limit > 0 {

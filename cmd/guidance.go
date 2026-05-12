@@ -7,9 +7,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/theinventor/monstermailbox-cli/internal/client"
-	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/spf13/cobra"
+	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 )
 
 // `mmb guidance` — per-agent guidance entries. When a matching email
@@ -44,7 +43,7 @@ func newGuidanceListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List this agent's guidance entries",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cli := client.New()
+			cli := newAPIClient()
 			q := url.Values{}
 			if limit > 0 {
 				q.Set("limit", fmt.Sprintf("%d", limit))
@@ -67,7 +66,7 @@ func newGuidanceGetCmd() *cobra.Command {
 		Short: "Get one guidance entry by id",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cli := client.New()
+			cli := newAPIClient()
 			resp, err := cli.Do(http.MethodGet, "/guidance/"+args[0], nil, nil)
 			if err != nil {
 				return fmt.Errorf("GET /guidance/%s: %w", args[0], err)
@@ -83,16 +82,16 @@ func newGuidanceGetCmd() *cobra.Command {
 // create/update commands share. Pulled out so the two commands can't
 // drift on flag names — the schema lives here.
 type guidanceMutationFlags struct {
-	Name           string
-	Instructions   string
-	Enabled        bool
-	enabledSet     bool
-	FromEmail      string
-	FromDomain     string
-	FromRegex      string
-	SubjectRegex   string
-	BodyContains   []string
-	BodyRegex      string
+	Name         string
+	Instructions string
+	Enabled      bool
+	enabledSet   bool
+	FromEmail    string
+	FromDomain   string
+	FromRegex    string
+	SubjectRegex string
+	BodyContains []string
+	BodyRegex    string
 }
 
 // bindGuidanceFlags wires every guidance content flag onto a cobra
@@ -181,7 +180,7 @@ func newGuidanceCreateCmd() *cobra.Command {
 					newDryRunEnvelope(http.MethodPost, "/guidance", body, mf))
 			}
 
-			cli := client.New()
+			cli := newAPIClient()
 			resp, err := cli.DoWithHeaders(http.MethodPost, "/guidance", body, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("POST /guidance: %w", err)
@@ -216,7 +215,7 @@ func newGuidanceUpdateCmd() *cobra.Command {
 					newDryRunEnvelope(http.MethodPatch, path, body, mf))
 			}
 
-			cli := client.New()
+			cli := newAPIClient()
 			resp, err := cli.DoWithHeaders(http.MethodPatch, path, body, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("PATCH %s: %w", path, err)
@@ -243,7 +242,7 @@ func newGuidanceDeleteCmd() *cobra.Command {
 					newDryRunEnvelope(http.MethodDelete, path, nil, mf))
 			}
 
-			cli := client.New()
+			cli := newAPIClient()
 			resp, err := cli.DoWithHeaders(http.MethodDelete, path, nil, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("DELETE %s: %w", path, err)
