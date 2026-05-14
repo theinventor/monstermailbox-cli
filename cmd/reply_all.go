@@ -30,6 +30,7 @@ func newReplyAllCmd() *cobra.Command {
 	var noQuote bool
 	var mf mutationFlags
 	var bf bodyFlags
+	var af attachmentFlags
 	c := &cobra.Command{
 		Use:   "reply-all <message-id>",
 		Short: "Reply to everyone on the original thread (the safe default)",
@@ -48,6 +49,10 @@ original already starts with "Re:".`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			messageID := args[0]
 			text, htmlBody, err := bf.resolve()
+			if err != nil {
+				return err
+			}
+			attachments, err := af.resolve()
 			if err != nil {
 				return err
 			}
@@ -97,10 +102,12 @@ original already starts with "Re:".`,
 			}
 
 			if mf.DryRun {
+				attachDryRunPayload(payload, attachments)
 				return printJSON(cmd.OutOrStdout(),
 					newDryRunEnvelope(http.MethodPost, "/send", payload, mf))
 			}
 
+			attachPayload(payload, attachments)
 			resp, err := cli.DoWithHeaders(http.MethodPost, "/send", payload, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("POST /send: %w", err)
@@ -114,6 +121,7 @@ original already starts with "Re:".`,
 	c.Flags().StringSliceVar(&bcc, "bcc", nil, "bcc recipients")
 	c.Flags().BoolVar(&noQuote, "no-quote", false, "send body alone without quoting the original message")
 	bindBodyFlags(c, &bf)
+	bindAttachmentFlags(c, &af)
 	bindMutationFlags(c, &mf)
 	_ = exitcode.Generic // silence import when not used directly
 	return c

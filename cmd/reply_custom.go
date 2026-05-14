@@ -31,6 +31,7 @@ func newReplyCustomRecipientsCmd() *cobra.Command {
 	var noQuote bool
 	var mf mutationFlags
 	var bf bodyFlags
+	var af attachmentFlags
 	c := &cobra.Command{
 		Use:   "reply-not-all-with-custom-recipients <message-id>",
 		Short: "Reply with explicit recipients only (use only when you're CONFIDENT reply-all is wrong)",
@@ -51,6 +52,10 @@ same as reply-all.`,
 					fmt.Errorf("--to is required for reply-not-all-with-custom-recipients (use 'reply-all' if you don't have an explicit recipient list)"))
 			}
 			text, htmlBody, err := bf.resolve()
+			if err != nil {
+				return err
+			}
+			attachments, err := af.resolve()
 			if err != nil {
 				return err
 			}
@@ -97,10 +102,12 @@ same as reply-all.`,
 			}
 
 			if mf.DryRun {
+				attachDryRunPayload(payload, attachments)
 				return printJSON(cmd.OutOrStdout(),
 					newDryRunEnvelope(http.MethodPost, "/send", payload, mf))
 			}
 
+			attachPayload(payload, attachments)
 			resp, err := cli.DoWithHeaders(http.MethodPost, "/send", payload, nil, mf.Headers())
 			if err != nil {
 				return fmt.Errorf("POST /send: %w", err)
@@ -115,6 +122,7 @@ same as reply-all.`,
 	c.Flags().StringSliceVar(&bcc, "bcc", nil, "bcc recipients")
 	c.Flags().BoolVar(&noQuote, "no-quote", false, "send body alone without quoting the original")
 	bindBodyFlags(c, &bf)
+	bindAttachmentFlags(c, &af)
 	bindMutationFlags(c, &mf)
 	return c
 }

@@ -4,7 +4,12 @@
 package cmd
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -75,5 +80,152 @@ func TestNewEmailSendsCcAndBcc(t *testing.T) {
 	bcc, _ := body["bcc"].([]any)
 	if len(bcc) != 1 || bcc[0] != "dave@stripe.com" {
 		t.Errorf("body.bcc MUST carry --bcc; got: %v", bcc)
+	}
+}
+
+func TestNewEmailSendsAttachmentPayload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hello.txt")
+	if err := os.WriteFile(path, []byte("hello attachment"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bodyPath := filepath.Join(t.TempDir(), "body.txt")
+	if err := os.WriteFile(bodyPath, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, cap, err := runCmd(t,
+		[]string{"new-email", "--to", "alice@stripe.com", "--subject", "Hi", "--body-file", bodyPath, "--attach", path},
+		202, `{}`)
+	if err != nil {
+		t.Fatalf("new-email with attachment returned error: %v", err)
+	}
+	body := decodeBody(t, cap.body)
+	if body["body_text"] != "hello" {
+		t.Errorf("body-file MUST remain compatible with attachments; got: %v", body["body_text"])
+	}
+	attachments, _ := body["attachments"].([]any)
+	if len(attachments) != 1 {
+		t.Fatalf("body.attachments MUST carry one attachment; got: %v", body["attachments"])
+	}
+	attachment, _ := attachments[0].(map[string]any)
+	if attachment["filename"] != "hello.txt" {
+		t.Errorf("attachment filename MUST be basename only; got: %v", attachment["filename"])
+	}
+	if attachment["content_type"] != "text/plain; charset=utf-8" {
+		t.Errorf("attachment content_type MUST be detected; got: %v", attachment["content_type"])
+	}
+	if attachment["size"] != float64(len("hello attachment")) {
+		t.Errorf("attachment size MUST be present; got: %v", attachment["size"])
+	}
+	want := base64.StdEncoding.EncodeToString([]byte("hello attachment"))
+	if attachment["content_base64"] != want {
+		t.Errorf("attachment content_base64 MUST carry encoded bytes; got: %v", attachment["content_base64"])
+	}
+}
+
+func TestNewEmailDryRunRedactsAttachmentBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(path, []byte("secret local bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, cap, err := runCmd(t,
+		[]string{"new-email", "--to", "x@y.com", "--subject", "x", "--body", "y", "--attach", path, "--dry-run"},
+		200, `should-never-fire`)
+	if err != nil {
+		t.Fatalf("dry-run returned error: %v", err)
+	}
+	if cap.hits != 0 {
+		t.Errorf("--dry-run MUST NOT fire HTTP; got %d hits", cap.hits)
+	}
+	if strings.Contains(stdout, "secret local bytes") || strings.Contains(stdout, "content_base64") || strings.Contains(stdout, path) {
+		t.Fatalf("dry-run MUST show attachment metadata only, not bytes or local paths; got: %q", stdout)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+		t.Fatalf("dry-run stdout MUST be JSON; got: %q", stdout)
+	}
+	body, _ := envelope["body"].(map[string]any)
+	attachments, _ := body["attachments"].([]any)
+	if len(attachments) != 1 {
+		t.Fatalf("dry-run body.attachments MUST carry metadata; got: %v", body["attachments"])
+	}
+	attachment, _ := attachments[0].(map[string]any)
+	if attachment["filename"] != "notes.txt" || attachment["size"] != float64(len("secret local bytes")) {
+		t.Errorf("dry-run attachment metadata mismatch; got: %v", attachment)
+	}
+}
+
+func TestNewEmailRejectsBlockedAttachmentExtension(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "payload.exe")
+	if err := os.WriteFile(path, []byte("nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := runCmd(t,
+		[]string{"new-email", "--to", "x@y.com", "--subject", "x", "--body", "y", "--attach", path},
+		200, `{}`)
+	if err == nil {
+		t.Fatalf("blocked attachment extension MUST fail")
+	}
+	if !strings.Contains(err.Error(), "blocked file extension") {
+		t.Errorf("error MUST explain blocked extension; got: %v", err)
+	}
+}
+
+func TestNewEmailRejectsOversizeAttachment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large.txt")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxAttachmentBytes + 1); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = runCmd(t,
+		[]string{"new-email", "--to", "x@y.com", "--subject", "x", "--body", "y", "--attach", path},
+		200, `{}`)
+	if err == nil {
+		t.Fatalf("oversize attachment MUST fail")
+	}
+	if !strings.Contains(err.Error(), "exceeds size limit") {
+		t.Errorf("error MUST explain size limit; got: %v", err)
+	}
+}
+
+func TestNewEmailRejectsTooManyAttachments(t *testing.T) {
+	dir := t.TempDir()
+	args := []string{"new-email", "--to", "x@y.com", "--subject", "x", "--body", "y"}
+	for i := 0; i < maxAttachments+1; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("note-%02d.txt", i))
+		if err := os.WriteFile(path, []byte("ok"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		args = append(args, "--attach", path)
+	}
+
+	_, _, err := runCmd(t, args, 200, `{}`)
+	if err == nil {
+		t.Fatalf("too many attachments MUST fail")
+	}
+	if !strings.Contains(err.Error(), "count limit") {
+		t.Errorf("error MUST explain count limit; got: %v", err)
+	}
+}
+
+func TestNewEmailRejectsUnsafeAttachmentFilename(t *testing.T) {
+	_, _, err := runCmd(t,
+		[]string{"new-email", "--to", "x@y.com", "--subject", "x", "--body", "y", "--attach", "bad\nname.txt"},
+		200, `{}`)
+	if err == nil {
+		t.Fatalf("unsafe attachment filename MUST fail")
+	}
+	if !strings.Contains(err.Error(), "control characters") {
+		t.Errorf("error MUST explain unsafe filename; got: %v", err)
 	}
 }
