@@ -13,6 +13,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -71,13 +73,13 @@ func runReplyCmd(t *testing.T, argv []string, routes map[string]routedResponse) 
 // overrides via opts.
 func msgStub(opts ...func(map[string]any)) string {
 	m := map[string]any{
-		"id":       "123",
-		"from":     map[string]any{"email": "sender@example.com", "display_name": ""},
-		"to":       []string{"agent@monstermailbox.com", "carol@stripe.com"},
-		"cc":       []string{"bob@stripe.com"},
-		"subject":  "original topic",
-		"body_text": "",
-		"body_html": "",
+		"id":          "123",
+		"from":        map[string]any{"email": "sender@example.com", "display_name": ""},
+		"to":          []string{"agent@monstermailbox.com", "carol@stripe.com"},
+		"cc":          []string{"bob@stripe.com"},
+		"subject":     "original topic",
+		"body_text":   "",
+		"body_html":   "",
 		"received_at": "",
 	}
 	for _, o := range opts {
@@ -91,8 +93,8 @@ func msgStub(opts ...func(map[string]any)) string {
 
 func TestReplyAllSendsReplyModeAllAndOmitsTo(t *testing.T) {
 	routes := map[string]routedResponse{
-		"GET /msg/123":  {status: 200, body: msgStub()},
-		"POST /send":    {status: 202, body: `{"outbound_id":"o_1","status":"queued"}`},
+		"GET /msg/123": {status: 200, body: msgStub()},
+		"POST /send":   {status: 202, body: `{"outbound_id":"o_1","status":"queued"}`},
 	}
 	_, _, cap, err := runReplyCmd(t,
 		[]string{"reply-all", "123", "--body", "thanks"},
@@ -218,6 +220,57 @@ func TestReplyAllHTMLQuotesWithBlockquote(t *testing.T) {
 	out, _ := body["body_html"].(string)
 	if !strings.Contains(out, "<p>thanks</p>") || !strings.Contains(out, "<blockquote") {
 		t.Errorf("HTML body MUST contain reply + <blockquote>; got: %q", out)
+	}
+}
+
+func TestReplyAllSendsSafeAttachment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reply-note.txt")
+	if err := os.WriteFile(path, []byte("attached reply"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	routes := map[string]routedResponse{
+		"GET /msg/123": {status: 200, body: msgStub()},
+		"POST /send":   {status: 202, body: `{}`},
+	}
+	_, _, cap, err := runReplyCmd(t,
+		[]string{"reply-all", "123", "--body", "thanks", "--attach", path},
+		routes)
+	if err != nil {
+		t.Fatalf("reply-all with attachment returned error: %v", err)
+	}
+	body := decodeBody(t, cap.body)
+	if body["reply_mode"] != "all" {
+		t.Fatalf("reply-all MUST still send reply_mode=all; got: %v", body["reply_mode"])
+	}
+	attachments, _ := body["attachments"].([]any)
+	if len(attachments) != 1 {
+		t.Fatalf("body.attachments MUST carry one attachment; got: %v", body["attachments"])
+	}
+	attachment, _ := attachments[0].(map[string]any)
+	if attachment["filename"] != "reply-note.txt" {
+		t.Errorf("attachment filename MUST be basename only; got: %v", attachment["filename"])
+	}
+	if attachment["content_base64"] == "" {
+		t.Errorf("attachment content_base64 MUST be sent on live reply-all")
+	}
+}
+
+func TestReplyAllRejectsArchiveOfArchivesAttachment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bundle.zip.gz")
+	if err := os.WriteFile(path, []byte("nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	routes := map[string]routedResponse{
+		"GET /msg/123": {status: 200, body: msgStub()},
+	}
+	_, _, _, err := runReplyCmd(t,
+		[]string{"reply-all", "123", "--body", "thanks", "--attach", path},
+		routes)
+	if err == nil {
+		t.Fatalf("archive-of-archives attachment MUST fail")
+	}
+	if !strings.Contains(err.Error(), "archive inside an archive") {
+		t.Errorf("error MUST explain archive nesting; got: %v", err)
 	}
 }
 

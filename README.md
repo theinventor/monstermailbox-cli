@@ -155,11 +155,13 @@ mmb inbox watch    --json                          # SSE stream of events
 mmb msg show       <id>
 
 # Outbound
-mmb new-email      --to <addr> --subject <s> --body <s> [--cc <addr>...] [--bcc <addr>...]
-mmb reply-to-email --to-message-id <id>      --body <s> [--cc <addr>...] [--bcc <addr>...] [--subject-override <s>]
-                  # threading is automatic; subject + recipient are derived from the original
+mmb new-email      --to <addr> --subject <s> --body <s> [--cc <addr>...] [--bcc <addr>...] [--attach <path>...]
+mmb reply-all      <message-id>              --body <s> [--cc <addr>...] [--bcc <addr>...] [--attach <path>...]
+                  # threading is automatic; subject + recipients are derived from the original
+mmb reply-not-all-with-custom-recipients <message-id> --to <addr> --body <s> [--attach <path>...]
+                  # explicit recipient escape hatch; prefer reply-all unless you are intentionally narrowing
 mmb send           --to <addr> --subject <s> --body <s> [--in-reply-to <id>]
-                  # deprecated alias; new agents should use new-email / reply-to-email
+                  # deprecated alias; new agents should use new-email / reply-all
 
 # Policy
 mmb whitelist list
@@ -175,6 +177,13 @@ mmb webhook create --name <label> --url <url> --event inbox.new [--auth-bearer <
 mmb webhook update <id> [--header "x-openclaw-token: <token>"] [--clear-headers]
 mmb webhook test   <id>
 ```
+
+Outbound attachment flags read local files and send them to the API as safe
+attachment objects: basename filename, detected content type, size, and base64
+content. Repeat `--attach` (or `--attachment`) for more than one file. Dry-runs
+show attachment metadata only, never bytes or local absolute paths. The CLI
+rejects blocked executable extensions, unsafe filenames, oversized files, and
+nested archive names before contacting the API.
 
 Most commands emit JSON; pipe through `jq` for filtering:
 

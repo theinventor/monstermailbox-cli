@@ -22,11 +22,13 @@ import (
 //	--body-html       inline HTML
 //	--body-file       plain text from file (HTML doesn't shell-escape well)
 //	--body-html-file  HTML from file
+//	--attach          local file attachment (repeatable)
 func newNewEmailCmd() *cobra.Command {
 	var to, subject string
 	var cc, bcc []string
 	var mf mutationFlags
 	var bf bodyFlags
+	var af attachmentFlags
 	c := &cobra.Command{
 		Use:   "new-email",
 		Short: "Send a brand-new outbound thread (no reply context)",
@@ -36,6 +38,10 @@ func newNewEmailCmd() *cobra.Command {
 					fmt.Errorf("--to and --subject are both required"))
 			}
 			text, html, err := bf.resolve()
+			if err != nil {
+				return err
+			}
+			attachments, err := af.resolve()
 			if err != nil {
 				return err
 			}
@@ -57,10 +63,12 @@ func newNewEmailCmd() *cobra.Command {
 			}
 
 			if mf.DryRun {
+				attachDryRunPayload(payload, attachments)
 				return printJSON(cmd.OutOrStdout(),
 					newDryRunEnvelope(http.MethodPost, "/send", payload, mf))
 			}
 
+			attachPayload(payload, attachments)
 			cli := newAPIClient()
 			resp, err := cli.DoWithHeaders(http.MethodPost, "/send", payload, nil, mf.Headers())
 			if err != nil {
@@ -75,6 +83,7 @@ func newNewEmailCmd() *cobra.Command {
 	c.Flags().StringSliceVar(&cc, "cc", nil, "cc recipients (comma-separated or repeat the flag)")
 	c.Flags().StringSliceVar(&bcc, "bcc", nil, "bcc recipients (comma-separated or repeat the flag)")
 	bindBodyFlags(c, &bf)
+	bindAttachmentFlags(c, &af)
 	bindMutationFlags(c, &mf)
 	return c
 }
