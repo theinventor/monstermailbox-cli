@@ -190,12 +190,36 @@ func hasNestedArchiveExtensions(exts []string) bool {
 
 func detectAttachmentContentType(filename string, raw []byte) string {
 	if extType := mime.TypeByExtension(strings.ToLower(filepath.Ext(filename))); extType != "" {
-		return extType
+		return normalizeAttachmentContentType(extType)
 	}
 	if len(raw) == 0 {
 		return "application/octet-stream"
 	}
-	return http.DetectContentType(raw)
+	return normalizeAttachmentContentType(http.DetectContentType(raw))
+}
+
+func normalizeAttachmentContentType(contentType string) string {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err == nil && mediaType != "" {
+		return canonicalAttachmentContentType(mediaType)
+	}
+	if beforeParam, _, ok := strings.Cut(contentType, ";"); ok {
+		contentType = beforeParam
+	}
+	contentType = strings.TrimSpace(contentType)
+	if contentType == "" {
+		return "application/octet-stream"
+	}
+	return canonicalAttachmentContentType(contentType)
+}
+
+func canonicalAttachmentContentType(contentType string) string {
+	switch strings.ToLower(contentType) {
+	case "application/x-zip-compressed":
+		return "application/zip"
+	default:
+		return strings.ToLower(contentType)
+	}
 }
 
 func attachPayload(payload map[string]any, attachments []outboundAttachment) {
