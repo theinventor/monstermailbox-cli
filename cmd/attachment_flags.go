@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	maxAttachmentBytes      int64 = 20 * 1024 * 1024
+	maxAttachments                = 10
+	maxAttachmentBytes      int64 = 25 * 1024 * 1024
 	maxTotalAttachmentBytes int64 = 25 * 1024 * 1024
 )
 
@@ -54,13 +55,17 @@ type attachmentSummary struct {
 }
 
 func bindAttachmentFlags(c *cobra.Command, af *attachmentFlags) {
-	c.Flags().StringArrayVar(&af.Paths, "attach", nil, "attach a local file; repeat for multiple attachments")
+	c.Flags().StringArrayVar(&af.Paths, "attach", nil, "attach a local file; repeat for multiple attachments (max 10, 25 MiB each, 25 MiB total)")
 	c.Flags().StringArrayVar(&af.Paths, "attachment", nil, "alias for --attach")
 }
 
 func (af attachmentFlags) resolve() ([]outboundAttachment, error) {
 	if len(af.Paths) == 0 {
 		return nil, nil
+	}
+	if len(af.Paths) > maxAttachments {
+		return nil, exitcode.Wrap(exitcode.Usage,
+			fmt.Errorf("attachments exceed count limit of %d", maxAttachments))
 	}
 
 	attachments := make([]outboundAttachment, 0, len(af.Paths))

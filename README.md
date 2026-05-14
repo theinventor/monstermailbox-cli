@@ -182,8 +182,9 @@ Outbound attachment flags read local files and send them to the API as safe
 attachment objects: basename filename, detected content type, size, and base64
 content. Repeat `--attach` (or `--attachment`) for more than one file. Dry-runs
 show attachment metadata only, never bytes or local absolute paths. The CLI
-rejects blocked executable extensions, unsafe filenames, oversized files, and
-nested archive names before contacting the API.
+rejects more than 10 attachments, attachments over 25 MiB, totals over 25 MiB,
+blocked executable extensions, unsafe filenames, oversized files, and nested
+archive names before contacting the API.
 
 Most commands emit JSON; pipe through `jq` for filtering:
 

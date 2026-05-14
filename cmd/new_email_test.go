@@ -6,6 +6,7 @@ package cmd
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -194,6 +195,26 @@ func TestNewEmailRejectsOversizeAttachment(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exceeds size limit") {
 		t.Errorf("error MUST explain size limit; got: %v", err)
+	}
+}
+
+func TestNewEmailRejectsTooManyAttachments(t *testing.T) {
+	dir := t.TempDir()
+	args := []string{"new-email", "--to", "x@y.com", "--subject", "x", "--body", "y"}
+	for i := 0; i < maxAttachments+1; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("note-%02d.txt", i))
+		if err := os.WriteFile(path, []byte("ok"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		args = append(args, "--attach", path)
+	}
+
+	_, _, err := runCmd(t, args, 200, `{}`)
+	if err == nil {
+		t.Fatalf("too many attachments MUST fail")
+	}
+	if !strings.Contains(err.Error(), "count limit") {
+		t.Errorf("error MUST explain count limit; got: %v", err)
 	}
 }
 
