@@ -111,8 +111,8 @@ func TestNewEmailSendsAttachmentPayload(t *testing.T) {
 	if attachment["filename"] != "hello.txt" {
 		t.Errorf("attachment filename MUST be basename only; got: %v", attachment["filename"])
 	}
-	if attachment["content_type"] != "text/plain; charset=utf-8" {
-		t.Errorf("attachment content_type MUST be detected; got: %v", attachment["content_type"])
+	if attachment["content_type"] != "text/plain" {
+		t.Errorf("attachment content_type MUST be detected without MIME parameters; got: %v", attachment["content_type"])
 	}
 	if attachment["size"] != float64(len("hello attachment")) {
 		t.Errorf("attachment size MUST be present; got: %v", attachment["size"])
