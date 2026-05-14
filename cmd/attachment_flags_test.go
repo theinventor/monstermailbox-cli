@@ -22,3 +22,10 @@ func TestNormalizeAttachmentContentTypeFallsBackToBaseType(t *testing.T) {
 		t.Fatalf("malformed MIME parameters MUST still normalize to base media type; got %q", got)
 	}
 }
+
+func TestNormalizeAttachmentContentTypeCanonicalizesZipAlias(t *testing.T) {
+	got := normalizeAttachmentContentType("application/x-zip-compressed")
+	if got != "application/zip" {
+		t.Fatalf("Windows zip MIME alias MUST normalize to application/zip; got %q", got)
+	}
+}

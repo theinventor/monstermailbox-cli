@@ -201,7 +201,7 @@ func detectAttachmentContentType(filename string, raw []byte) string {
 func normalizeAttachmentContentType(contentType string) string {
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err == nil && mediaType != "" {
-		return strings.ToLower(mediaType)
+		return canonicalAttachmentContentType(mediaType)
 	}
 	if beforeParam, _, ok := strings.Cut(contentType, ";"); ok {
 		contentType = beforeParam
@@ -210,7 +210,16 @@ func normalizeAttachmentContentType(contentType string) string {
 	if contentType == "" {
 		return "application/octet-stream"
 	}
-	return strings.ToLower(contentType)
+	return canonicalAttachmentContentType(contentType)
+}
+
+func canonicalAttachmentContentType(contentType string) string {
+	switch strings.ToLower(contentType) {
+	case "application/x-zip-compressed":
+		return "application/zip"
+	default:
+		return strings.ToLower(contentType)
+	}
 }
 
 func attachPayload(payload map[string]any, attachments []outboundAttachment) {
