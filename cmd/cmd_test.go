@@ -537,7 +537,7 @@ func TestExpectRequiresFromFlag(t *testing.T) {
 // ── whitelist create ───────────────────────────────────────────
 
 func TestWhitelistCreatePostsToWhitelistEndpoint(t *testing.T) {
-	_, cap, err := runCmd(t, []string{"whitelist", "create", "@example.com"}, 201, `{"id":"w_1"}`)
+	_, cap, err := runCmd(t, []string{"whitelist", "create", "alice@example.com"}, 201, `{"id":"w_1"}`)
 	if err != nil {
 		t.Fatalf("whitelist create returned error: %v", err)
 	}
@@ -546,19 +546,108 @@ func TestWhitelistCreatePostsToWhitelistEndpoint(t *testing.T) {
 	}
 	var body map[string]any
 	_ = json.Unmarshal(cap.body, &body)
-	if body["pattern"] != "@example.com" {
-		t.Errorf("body.pattern MUST carry the positional arg; got: %v", body["pattern"])
+	if body["sender"] != "alice@example.com" {
+		t.Errorf("body.sender MUST carry the positional arg; got: %v", body["sender"])
+	}
+	if _, has := body["pattern"]; has {
+		t.Errorf("body MUST NOT send legacy pattern field; got: %v", body)
+	}
+}
+
+func TestWhitelistCreateSenderFlagPostsSender(t *testing.T) {
+	_, cap, err := runCmd(t, []string{"whitelist", "create", "--sender", "billing@example.com"}, 201, `{"id":"w_1"}`)
+	if err != nil {
+		t.Fatalf("whitelist create --sender returned error: %v", err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(cap.body, &body)
+	if body["sender"] != "billing@example.com" {
+		t.Errorf("body.sender MUST carry --sender; got: %v", body["sender"])
+	}
+}
+
+func TestWhitelistCreateSenderRegexWithSubjectRegex(t *testing.T) {
+	_, cap, err := runCmd(t,
+		[]string{"whitelist", "create", "--sender-regex", `@stripe\.com\z`, "--subject-regex", `\Ainvoice `},
+		201, `{"id":"w_1"}`)
+	if err != nil {
+		t.Fatalf("whitelist create --sender-regex returned error: %v", err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(cap.body, &body)
+	if body["sender_regex"] != `@stripe\.com\z` {
+		t.Errorf("body.sender_regex MUST carry --sender-regex; got: %v", body["sender_regex"])
+	}
+	if body["subject_regex"] != `\Ainvoice ` {
+		t.Errorf("body.subject_regex MUST carry --subject-regex; got: %v", body["subject_regex"])
+	}
+	if _, has := body["sender"]; has {
+		t.Errorf("regex path MUST NOT also send sender; got: %v", body)
+	}
+}
+
+func TestWhitelistCreateDryRunUsesSenderPayload(t *testing.T) {
+	stdout, cap, err := runCmd(t,
+		[]string{"whitelist", "create", "user@example.com", "--dry-run"},
+		200, `{}`)
+	if err != nil {
+		t.Fatalf("whitelist create --dry-run returned error: %v", err)
+	}
+	if cap.hits != 0 {
+		t.Fatalf("--dry-run MUST NOT make an HTTP call; server saw %d hit(s)", cap.hits)
+	}
+	var env map[string]any
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatalf("--dry-run output MUST be JSON; got %q", stdout)
+	}
+	body, _ := env["body"].(map[string]any)
+	if body["sender"] != "user@example.com" {
+		t.Errorf("dry-run body.sender MUST carry positional sender; got: %v", body["sender"])
+	}
+	if _, has := body["pattern"]; has {
+		t.Errorf("dry-run body MUST NOT send legacy pattern field; got: %v", body)
+	}
+}
+
+func TestWhitelistCreateRejectsMissingOrAmbiguousSenderBeforeHTTP(t *testing.T) {
+	cases := []struct {
+		name string
+		argv []string
+		want string
+	}{
+		{"missing", []string{"whitelist", "create"}, "requires an exact sender"},
+		{"positional_and_sender", []string{"whitelist", "create", "a@example.com", "--sender", "b@example.com"}, "only one sender source"},
+		{"sender_and_regex", []string{"whitelist", "create", "--sender", "a@example.com", "--sender-regex", ".*@example.com"}, "only one sender source"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, stderr, cap, err := runCmdSplit(t, tc.argv, 201, `{"id":"w_1"}`)
+			if err == nil {
+				t.Fatalf("expected validation error")
+			}
+			if cap.hits != 0 {
+				t.Fatalf("validation MUST happen before HTTP; server saw %d hit(s)", cap.hits)
+			}
+			if !strings.Contains(stderr, tc.want) {
+				t.Errorf("stderr should explain validation failure %q; got %q", tc.want, stderr)
+			}
+		})
 	}
 }
 
 // `whitelist add` is the deprecated v0.2 spelling — kept hidden for one release.
 func TestWhitelistAddAliasStillWorks(t *testing.T) {
-	_, cap, err := runCmd(t, []string{"whitelist", "add", "@example.com"}, 201, `{"id":"w_1"}`)
+	_, cap, err := runCmd(t, []string{"whitelist", "add", "legacy@example.com"}, 201, `{"id":"w_1"}`)
 	if err != nil {
 		t.Fatalf("whitelist add alias MUST still work; got error: %v", err)
 	}
 	if cap.method != http.MethodPost || cap.path != "/whitelist" {
 		t.Errorf("alias MUST hit POST /whitelist; got %s %s", cap.method, cap.path)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(cap.body, &body)
+	if body["sender"] != "legacy@example.com" {
+		t.Errorf("alias MUST send sender payload; got %v", body)
 	}
 }
 

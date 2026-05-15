@@ -164,8 +164,9 @@ mmb send           --to <addr> --subject <s> --body <s> [--in-reply-to <id>]
                   # deprecated alias; new agents should use new-email / reply-all
 
 # Policy
-mmb whitelist list
-mmb whitelist add  --sender <addr> | --sender-regex <regex>  [--subject-regex <regex>]
+mmb whitelist create <sender-email-or-domain>                # exact sender/domain trust rule
+mmb whitelist create --sender <sender-email-or-domain>       # explicit form of the same exact rule
+mmb whitelist create --sender-regex <regex> [--subject-regex <regex>]
 mmb expect         --from <addr> [--subject-regex <regex>] [--purpose <text>] [--window <duration>]
 
 # Quarantine (agent-side; human-in-the-loop release happens in the dashboard)
@@ -193,6 +194,19 @@ Most commands emit JSON; pipe through `jq` for filtering:
 ```sh
 mmb inbox list --state trusted | jq '.messages[].subject'
 ```
+
+Whitelist creation posts the API's `sender`, `sender_regex`, and optional
+`subject_regex` fields. Prefer exact sender addresses, such as
+`mmb whitelist create billing@example.com`, unless you intentionally need a
+domain or regex rule. Regex matching must be explicit with `--sender-regex`:
+
+```sh
+mmb whitelist create billing@example.com
+mmb whitelist create --sender-regex '@stripe\.com\z' --subject-regex '\Ainvoice '
+```
+
+The older `mmb whitelist add ...` spelling remains as a hidden deprecated alias
+for compatibility, but new agents should call `mmb whitelist create`.
 
 ## Webhook Event Choices
 
