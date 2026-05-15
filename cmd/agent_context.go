@@ -103,7 +103,7 @@ func describeCommand(c *cobra.Command) map[string]any {
 		desc["description"] = c.Long
 	}
 
-	// Use string carries argument shape ("get <id>", "create <pattern>").
+	// Use string carries argument shape ("get <id>", "create [<sender>]").
 	// Strip the command name prefix so agents see only the args portion.
 	if useArgs := strings.TrimSpace(strings.TrimPrefix(c.Use, c.Name())); useArgs != "" {
 		desc["args"] = useArgs

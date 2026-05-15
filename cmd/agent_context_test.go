@@ -97,6 +97,24 @@ func TestAgentContext_OmitsHiddenAliases(t *testing.T) {
 	}
 }
 
+func TestAgentContext_WhitelistCreateDocumentsSenderFlags(t *testing.T) {
+	ctx := runAgentContext(t)
+	commands := ctx["commands"].(map[string]any)
+	wl := commands["whitelist"].(map[string]any)
+	wlSubs := wl["subcommands"].(map[string]any)
+	create := wlSubs["create"].(map[string]any)
+	flags := create["flags"].(map[string]any)
+
+	for _, name := range []string{"--sender", "--sender-regex", "--subject-regex"} {
+		if _, has := flags[name]; !has {
+			t.Errorf("whitelist create agent-context MUST expose %s; flags=%v", name, keysOf(flags))
+		}
+	}
+	if args := create["args"]; args != "[<sender>]" {
+		t.Errorf("whitelist create args = %v; want [<sender>]", args)
+	}
+}
+
 // Enums surface (principle 3 — errors that teach AND principle 7 —
 // machine introspection) — agents should be able to discover
 // inbox_state values without parsing a help string.
