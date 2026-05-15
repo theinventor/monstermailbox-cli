@@ -173,7 +173,9 @@ mmb quarantine list [--limit N]
 mmb quarantine escalate <id>     # v1 stub
 
 # Webhooks
-mmb webhook create --name <label> --url <url> --event inbox.new [--auth-bearer <token>] [--header "Name: value"]
+mmb webhook create --name <label> --url <url> --event-preset trusted-inbox [--auth-bearer <token>] [--header "Name: value"]
+mmb webhook create --name <label> --url <url> --event-preset quarantine-aware-inbox
+mmb webhook create --name <label> --url <url> --event <event> [--event <event>...]
 mmb webhook update <id> [--header "x-openclaw-token: <token>"] [--clear-headers]
 mmb webhook test   <id>
 ```
@@ -192,6 +194,25 @@ Most commands emit JSON; pipe through `jq` for filtering:
 mmb inbox list --state trusted | jq '.messages[].subject'
 ```
 
+## Webhook Event Choices
+
+Choose the smallest event set that matches the receiver:
+
+- `--event-preset trusted-inbox` subscribes to `inbox.new`. This is the
+  trusted/readable-mail signal: treat it as "go check the inbox now." It does
+  not notify when mail is quarantined.
+- `--event-preset quarantine-aware-inbox` subscribes to `inbox.new`,
+  `inbox.quarantined`, and `inbox.released`. Use it when the receiver needs to
+  know held mail exists or needs to react after a human releases it.
+- `--event-preset full-inbound-lifecycle` subscribes to `inbox.arriving`,
+  `inbox.new`, `inbox.quarantined`, `inbox.released`, and `inbox.rejected` for
+  inbound lifecycle observability.
+
+Quarantine webhook payloads are safe/redacted. They tell the integration that
+held mail exists; they do not let the agent read held content before human
+release. `--all-events` is for audit/observability/firehose receivers, not the
+default workaround for quarantine awareness.
+
 ## Webhook Auth Headers
 
 Receivers such as OpenClaw/AlphaClaw can require `Authorization: Bearer ...`
@@ -203,7 +224,7 @@ them from `webhook get/list` responses.
 mmb webhook create \
   --name openclaw \
   --url https://openclaw.example/hooks/mmb \
-  --event inbox.new \
+  --event-preset quarantine-aware-inbox \
   --auth-bearer "$WEBHOOK_TOKEN"
 
 mmb webhook update <id> --header "x-openclaw-token: $WEBHOOK_TOKEN"

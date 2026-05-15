@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -36,17 +37,24 @@ func newWebhookCmd() *cobra.Command {
 		Short: "Manage this agent's webhooks (mail-flow events delivered to a URL you control)",
 		Long: `Manage this agent's webhooks.
 
-When you don't know which events to pick, pick ONE:
+When you don't know which events to pick, pick the preset that matches
+your workflow:
 
-  --event inbox.new
+  --event-preset trusted-inbox
+      inbox.new only. Trusted/readable mail is ready; quarantined
+      mail will not notify this webhook.
 
-That's the "your inbound mail is ready to read" signal. Subscribe
-to that and treat the webhook as a poke that says "go check the
-inbox now" — most agents need nothing else.
+  --event-preset quarantine-aware-inbox
+      inbox.new + inbox.quarantined + inbox.released. Use this when
+      your integration needs to know held mail exists or when a human
+      releases it. Quarantine payloads stay redacted/safe; they do not
+      grant the agent access to held content.
 
-Subscribe to additional events only when you have a concrete
-reason (e.g. outbound.bounced if you need to react to undeliverable
-addresses; outbound.sent for delivery confirmation UIs).
+You can also pass explicit --event values. For example, --event inbox.new
+is the trusted/readable "go check the inbox" signal. It does not fire for
+quarantined mail. Subscribe to additional events only when you have a
+concrete reason (e.g. outbound.bounced if you need to react to
+undeliverable addresses; outbound.sent for delivery confirmation UIs).
 
 --all-events delivers EVERY event for every state change, including
 events you almost certainly won't act on. Use it only if you're
@@ -113,6 +121,7 @@ type webhookMutationFlags struct {
 	Name         string
 	URL          string
 	Events       []string
+	EventPreset  string
 	AllEvents    bool
 	Active       bool
 	Headers      []string
@@ -124,8 +133,9 @@ type webhookMutationFlags struct {
 func bindWebhookContentFlags(c *cobra.Command, f *webhookMutationFlags, isUpdate bool) {
 	c.Flags().StringVar(&f.Name, "name", "", "human label for the webhook")
 	c.Flags().StringVar(&f.URL, "url", "", "https URL the events POST to")
-	c.Flags().StringSliceVar(&f.Events, "event", nil, "event to subscribe to (repeatable). Most agents want only --event inbox.new (the 'check the inbox' signal). Run `mmb webhook events` for the full catalog.")
-	c.Flags().BoolVar(&f.AllEvents, "all-events", false, "subscribe to all agent-audience events. Only use this for audit/observability pipelines — for normal agents this is firehose-y. Prefer --event inbox.new.")
+	c.Flags().StringSliceVar(&f.Events, "event", nil, "event to subscribe to (repeatable). inbox.new means trusted/readable mail only; add inbox.quarantined or use --event-preset quarantine-aware-inbox for held-mail notifications.")
+	c.Flags().StringVar(&f.EventPreset, "event-preset", "", "named event set: trusted-inbox, quarantine-aware-inbox, full-inbound-lifecycle")
+	c.Flags().BoolVar(&f.AllEvents, "all-events", false, "subscribe to all agent-audience events. Only use this for audit/observability/firehose pipelines, not as the default quarantine workaround.")
 	c.Flags().StringArrayVar(&f.Headers, "header", nil, "delivery header to send with each webhook POST, as 'Name: value' (repeatable)")
 	c.Flags().StringVar(&f.AuthBearer, "auth-bearer", "", "set delivery Authorization: Bearer <token>")
 	if isUpdate {
@@ -136,6 +146,46 @@ func bindWebhookContentFlags(c *cobra.Command, f *webhookMutationFlags, isUpdate
 			return nil
 		}
 	}
+}
+
+var webhookEventPresets = map[string][]string{
+	"trusted-inbox": {
+		"inbox.new",
+	},
+	"quarantine-aware-inbox": {
+		"inbox.new",
+		"inbox.quarantined",
+		"inbox.released",
+	},
+	"full-inbound-lifecycle": {
+		"inbox.arriving",
+		"inbox.new",
+		"inbox.quarantined",
+		"inbox.released",
+		"inbox.rejected",
+	},
+}
+
+func webhookEventPresetNames() []string {
+	names := make([]string, 0, len(webhookEventPresets))
+	for name := range webhookEventPresets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func expandWebhookEventPreset(name string) ([]string, error) {
+	if name == "" {
+		return nil, nil
+	}
+	events, ok := webhookEventPresets[name]
+	if !ok {
+		return nil, fmt.Errorf("--event-preset must be one of: %s (got: %q)", strings.Join(webhookEventPresetNames(), ", "), name)
+	}
+	out := make([]string, len(events))
+	copy(out, events)
+	return out, nil
 }
 
 func validateWebhookEvents(events []string) error {
@@ -190,12 +240,24 @@ func newWebhookCreateCmd() *cobra.Command {
 		Short: "Create a webhook. Plaintext signing secret is returned ONCE in the response.",
 		Long: `Create a webhook.
 
-Most-common shape — subscribe to the "inbound is ready" signal:
+Simple trusted-inbox shape — notify only when inbound mail is readable:
 
   mmb webhook create \
     --name "my-receiver" \
     --url  "https://your-receiver.example.com/mmb" \
-    --event inbox.new
+    --event-preset trusted-inbox
+
+Quarantine-aware inbox shape — also notify when mail is held for
+human review, and when a human releases it:
+
+  mmb webhook create \
+    --name "my-receiver" \
+    --url  "https://your-receiver.example.com/mmb" \
+    --event-preset quarantine-aware-inbox
+
+The quarantine notification is intentionally safe/redacted; it tells
+the integration that held mail exists, not that the agent can read the
+held content before human release.
 
 The response includes the plaintext signing secret EXACTLY ONCE.
 Copy it now — the server bcrypts it; you cannot retrieve it later.
@@ -205,7 +267,8 @@ Receivers verify each request by:
   hmac.compare_digest(expected, "<X-MMB-Signature>")
 …and rejecting requests where |now - timestamp| > 300s.
 
-For other event types, run 'mmb webhook events' first.`,
+For other event types, run 'mmb webhook events' first. Use --all-events
+only for audit/observability/firehose receivers.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if wf.Name == "" {
 				return fmt.Errorf("--name is required")
@@ -213,9 +276,12 @@ For other event types, run 'mmb webhook events' first.`,
 			if wf.URL == "" {
 				return fmt.Errorf("--url is required")
 			}
-			events := normalizeWebhookEvents(wf.Events, wf.AllEvents)
+			events, err := normalizeWebhookEvents(wf)
+			if err != nil {
+				return err
+			}
 			if len(events) == 0 {
-				return fmt.Errorf("specify at least one --event, or pass --all-events")
+				return fmt.Errorf("specify at least one --event, pass --event-preset, or pass --all-events")
 			}
 			if err := validateWebhookEvents(events); err != nil {
 				return err
@@ -271,8 +337,11 @@ func newWebhookUpdateCmd() *cobra.Command {
 			if wf.URL != "" {
 				body["url"] = wf.URL
 			}
-			if wf.AllEvents || len(wf.Events) > 0 {
-				events := normalizeWebhookEvents(wf.Events, wf.AllEvents)
+			if wf.AllEvents || wf.EventPreset != "" || len(wf.Events) > 0 {
+				events, err := normalizeWebhookEvents(wf)
+				if err != nil {
+					return err
+				}
 				if err := validateWebhookEvents(events); err != nil {
 					return err
 				}
@@ -294,7 +363,7 @@ func newWebhookUpdateCmd() *cobra.Command {
 				body["headers"] = headers
 			}
 			if len(body) == 0 {
-				return fmt.Errorf("nothing to update — set at least one of --name / --url / --event / --all-events / --active / --header / --auth-bearer / --clear-headers")
+				return fmt.Errorf("nothing to update — set at least one of --name / --url / --event / --event-preset / --all-events / --active / --header / --auth-bearer / --clear-headers")
 			}
 			path := "/webhooks/" + args[0]
 			if mf.DryRun {
@@ -404,7 +473,9 @@ func newWebhookEventsCmd() *cobra.Command {
 "recommended_for" label.
 
 When in doubt, subscribe to ` + "`inbox.new`" + ` only — that's the
-"inbound mail is ready to read" signal most agents actually need.`,
+"trusted/readable inbound mail is ready" signal. It does not notify
+on quarantined mail. Use the quarantine-aware inbox preset when your
+receiver needs held-mail notifications.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cli := newAPIClient()
 			resp, err := cli.Do(http.MethodGet, "/webhook_events", nil, nil)
@@ -418,16 +489,32 @@ When in doubt, subscribe to ` + "`inbox.new`" + ` only — that's the
 	return c
 }
 
-func normalizeWebhookEvents(events []string, allEvents bool) []string {
-	if allEvents {
-		return []string{enums.WebhookWildcard}
+func normalizeWebhookEvents(wf webhookMutationFlags) ([]string, error) {
+	eventSources := 0
+	if wf.AllEvents {
+		eventSources++
 	}
-	out := make([]string, 0, len(events))
-	for _, e := range events {
+	if wf.EventPreset != "" {
+		eventSources++
+	}
+	if len(wf.Events) > 0 {
+		eventSources++
+	}
+	if eventSources > 1 {
+		return nil, fmt.Errorf("--event, --event-preset, and --all-events are mutually exclusive")
+	}
+	if wf.AllEvents {
+		return []string{enums.WebhookWildcard}, nil
+	}
+	if wf.EventPreset != "" {
+		return expandWebhookEventPreset(wf.EventPreset)
+	}
+	out := make([]string, 0, len(wf.Events))
+	for _, e := range wf.Events {
 		e = strings.TrimSpace(e)
 		if e != "" {
 			out = append(out, e)
 		}
 	}
-	return out
+	return out, nil
 }
