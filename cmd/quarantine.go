@@ -10,10 +10,8 @@ import (
 
 // `mmb quarantine list` → GET /inbox?state=quarantined.
 //
-// Convenience over `mmb inbox list --state=quarantined`; matches
-// the spec § "Bridge UX" command shape so muscle memory is the
-// same regardless of which surface (CLI vs dashboard) the operator
-// is on.
+// Convenience over `mmb inbox list --state=quarantined`; keeps the
+// review queue easy to script from agent-side local tooling.
 //
 // `mmb quarantine escalate <id>` is a v0 stub: the escalation flow
 // is owner-side (a human reviews + releases via the dashboard),
