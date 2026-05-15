@@ -222,9 +222,6 @@ These are deliberately out of scope. Humans, not agents, do them:
   `app/services/sanitizer/` and `app/services/risk_engine.rb`.
 - **MFA enrollment.** Passkeys / TOTP / backup codes are for the human
   owner's dashboard auth, not the agent.
-- **Bridge daemon** (`mmb-bridge`) configuration. Different binary,
-  different concerns; see `cli/mmb-bridge/`.
-
 ## Config file
 
 `~/.config/mmb/config.json` (XDG-compliant; honors `XDG_CONFIG_HOME`).
