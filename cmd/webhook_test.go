@@ -106,6 +106,95 @@ func TestWebhookCreateAllEventsCollapsesToWildcard(t *testing.T) {
 	}
 }
 
+func TestWebhookCreateTrustedInboxPresetPostsInboxNewOnly(t *testing.T) {
+	_, cap, err := runCmd(t,
+		[]string{"webhook", "create",
+			"--name", "trusted",
+			"--url", "https://example.com/h",
+			"--event-preset", "trusted-inbox"},
+		201, `{"id":"1"}`)
+	if err != nil {
+		t.Fatalf("webhook create returned error: %v", err)
+	}
+	assertBodyEvents(t, cap.body, []string{"inbox.new"})
+}
+
+func TestWebhookCreateQuarantineAwarePresetPostsExactEvents(t *testing.T) {
+	_, cap, err := runCmd(t,
+		[]string{"webhook", "create",
+			"--name", "quarantine-aware",
+			"--url", "https://example.com/h",
+			"--event-preset", "quarantine-aware-inbox"},
+		201, `{"id":"1"}`)
+	if err != nil {
+		t.Fatalf("webhook create returned error: %v", err)
+	}
+	assertBodyEvents(t, cap.body, []string{"inbox.new", "inbox.quarantined", "inbox.released"})
+}
+
+func TestWebhookCreateFullInboundLifecyclePresetPostsExactEvents(t *testing.T) {
+	_, cap, err := runCmd(t,
+		[]string{"webhook", "create",
+			"--name", "lifecycle",
+			"--url", "https://example.com/h",
+			"--event-preset", "full-inbound-lifecycle"},
+		201, `{"id":"1"}`)
+	if err != nil {
+		t.Fatalf("webhook create returned error: %v", err)
+	}
+	assertBodyEvents(t, cap.body, []string{
+		"inbox.arriving",
+		"inbox.new",
+		"inbox.quarantined",
+		"inbox.released",
+		"inbox.rejected",
+	})
+}
+
+func TestWebhookCreateRejectsEventPresetMixedWithExplicitEvent(t *testing.T) {
+	_, _, err := runCmd(t,
+		[]string{"webhook", "create",
+			"--name", "x", "--url", "https://example.com/h",
+			"--event-preset", "trusted-inbox",
+			"--event", "inbox.quarantined"},
+		201, `{}`)
+	if err == nil {
+		t.Fatalf("--event-preset mixed with --event MUST error")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error MUST explain mutual exclusion; got: %v", err)
+	}
+}
+
+func TestWebhookCreateRejectsEventPresetMixedWithAllEvents(t *testing.T) {
+	_, _, err := runCmd(t,
+		[]string{"webhook", "create",
+			"--name", "x", "--url", "https://example.com/h",
+			"--event-preset", "trusted-inbox",
+			"--all-events"},
+		201, `{}`)
+	if err == nil {
+		t.Fatalf("--event-preset mixed with --all-events MUST error")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error MUST explain mutual exclusion; got: %v", err)
+	}
+}
+
+func TestWebhookCreateRejectsUnknownEventPreset(t *testing.T) {
+	_, _, err := runCmd(t,
+		[]string{"webhook", "create",
+			"--name", "x", "--url", "https://example.com/h",
+			"--event-preset", "everything"},
+		201, `{}`)
+	if err == nil {
+		t.Fatalf("unknown --event-preset MUST error")
+	}
+	if !strings.Contains(err.Error(), "trusted-inbox") || !strings.Contains(err.Error(), "quarantine-aware-inbox") {
+		t.Errorf("error MUST enumerate valid presets; got: %v", err)
+	}
+}
+
 func TestWebhookCreateRejectsUnknownEvent(t *testing.T) {
 	_, _, err := runCmd(t,
 		[]string{"webhook", "create",
@@ -143,7 +232,7 @@ func TestWebhookCreateRequiresEvents(t *testing.T) {
 		[]string{"webhook", "create", "--name", "x", "--url", "https://example.com/h"},
 		201, `{}`)
 	if err == nil {
-		t.Fatalf("create without --event or --all-events MUST error")
+		t.Fatalf("create without --event, --event-preset, or --all-events MUST error")
 	}
 }
 
@@ -207,6 +296,16 @@ func TestWebhookUpdateCanReplaceDeliveryHeaders(t *testing.T) {
 	if headers["x-openclaw-token"] != "fake-token" {
 		t.Errorf("update MUST forward delivery headers; got: %v", headers)
 	}
+}
+
+func TestWebhookUpdateCanReplaceEventsWithQuarantineAwarePreset(t *testing.T) {
+	_, cap, err := runCmd(t,
+		[]string{"webhook", "update", "42", "--event-preset", "quarantine-aware-inbox"},
+		200, `{"id":"42"}`)
+	if err != nil {
+		t.Fatalf("update returned error: %v", err)
+	}
+	assertBodyEvents(t, cap.body, []string{"inbox.new", "inbox.quarantined", "inbox.released"})
 }
 
 func TestWebhookUpdateCanClearDeliveryHeaders(t *testing.T) {
@@ -295,5 +394,19 @@ func TestWebhookEventsHitsCatalog(t *testing.T) {
 	}
 	if cap.method != http.MethodGet || cap.path != "/webhook_events" {
 		t.Errorf("expected GET /webhook_events; got %s %s", cap.method, cap.path)
+	}
+}
+
+func assertBodyEvents(t *testing.T, raw []byte, want []string) {
+	t.Helper()
+	body := decodeBody(t, raw)
+	got, _ := body["events"].([]any)
+	if len(got) != len(want) {
+		t.Fatalf("body.events length mismatch: got %v, want %v", got, want)
+	}
+	for i, wantEvent := range want {
+		if got[i] != wantEvent {
+			t.Fatalf("body.events[%d] = %v, want %q (all events: %v)", i, got[i], wantEvent, got)
+		}
 	}
 }
