@@ -179,6 +179,17 @@ mmb webhook create --name <label> --url <url> --event-preset quarantine-aware-in
 mmb webhook create --name <label> --url <url> --event <event> [--event <event>...]
 mmb webhook update <id> [--header "x-openclaw-token: <token>"] [--clear-headers]
 mmb webhook test   <id>
+
+# Contact MonsterMailbox
+mmb contact support --subject <s> <question>
+mmb contact support --subject <s> --text <question>
+echo "<question>" | mmb contact support --subject <s> -
+mmb contact product-feedback <feedback>
+mmb contact product-feedback --text <feedback>
+echo "<feedback>" | mmb contact product-feedback -
+
+# Local CLI feedback ledger
+mmb feedback "the CLI help for --tier is confusing"
 ```
 
 Outbound attachment flags read local files and send them to the API as safe
@@ -226,6 +237,24 @@ Quarantine webhook payloads are safe/redacted. They tell the integration that
 held mail exists; they do not let the agent read held content before human
 release. `--all-events` is for audit/observability/firehose receivers, not the
 default workaround for quarantine awareness.
+
+## Contact And Feedback
+
+Use `mmb contact support` for technical support questions: account issues,
+delivery behavior, API behavior, webhook trouble, or operational questions.
+It creates a support thread through the authenticated API support endpoint and supports
+`--subject`, positional text, `--text`, stdin via `-`, `--idempotency-key`, and
+`--dry-run`. Support routing is handled server-side, so the CLI does not send
+mail directly or carry support delivery configuration.
+
+Use `mmb contact product-feedback` for product ideas, rough edges, and feature
+requests about MonsterMailbox itself. It posts to the product-feedback endpoint
+and supports positional text, `--text`, stdin via `-`, `--idempotency-key`, and
+`--dry-run`.
+
+Use `mmb feedback` for local CLI-maintainer notes. That command writes a local
+JSONL ledger and only posts upstream when `MONSTERMAILBOX_FEEDBACK_ENDPOINT` is
+configured, so it is not the product/support intake path.
 
 ## Webhook Auth Headers
 

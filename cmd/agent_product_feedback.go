@@ -1,11 +1,9 @@
 package cmd
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -33,19 +31,35 @@ import (
 // so a successful response just confirms "feedback received." Use
 // --dry-run to inspect the request shape without firing it.
 func newAgentProductFeedbackCmd() *cobra.Command {
+	c := newContactProductFeedbackCmd()
+	c.Use = "agent-product-feedback [text]"
+	c.Short = "Send product feedback to the monstermailbox maintainers"
+	c.Deprecated = "use `mmb contact product-feedback` for the clearer product-feedback intake path"
+	c.Long = `Deprecated alias for 'mmb contact product-feedback'.
+
+Use this for product ideas, rough edges, and feature requests about
+MonsterMailbox itself. Use 'mmb contact support' for technical support
+questions, and 'mmb feedback' for local CLI-maintainer notes.`
+	return c
+}
+
+func newContactProductFeedbackCmd() *cobra.Command {
 	var text string
 	var mf mutationFlags
 	c := &cobra.Command{
-		Use:   "agent-product-feedback [text]",
+		Use:   "product-feedback [text]",
 		Short: "Send product feedback to the monstermailbox maintainers",
-		Long: `Send product feedback to the monstermailbox maintainers via the
-agent-side server endpoint. Distinct from 'mmb feedback' (local CLI
-feedback log).
+		Long: `Send product feedback to the MonsterMailbox product maintainers via
+the authenticated product-feedback endpoint.
+
+Use this for product ideas, rough edges, and feature requests about
+MonsterMailbox itself. Use 'mmb contact support' for technical support
+questions, and 'mmb feedback' for local CLI-maintainer notes.
 
 Three input forms (pick exactly one):
-  1. Positional:  mmb agent-product-feedback "the policy editor is great"
-  2. Flag:        mmb agent-product-feedback --text "the ..."
-  3. Stdin:       echo "the ..." | mmb agent-product-feedback -
+  1. Positional:  mmb contact product-feedback "the policy editor is great"
+  2. Flag:        mmb contact product-feedback --text "the ..."
+  3. Stdin:       echo "the ..." | mmb contact product-feedback -
 
 A successful submission returns:
   {"received": true, "message": "feedback received"}
@@ -54,7 +68,7 @@ The server's upstream destination is intentionally not exposed in the
 response. Body is capped at 4 KB by the server.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			body, err := resolveFeedbackText(args, text, cmd.InOrStdin())
+			body, err := resolveSingleTextInput("product feedback text", args, text, cmd.InOrStdin())
 			if err != nil {
 				return exitcode.Wrap(exitcode.Usage, err)
 			}
@@ -80,21 +94,22 @@ response. Body is capped at 4 KB by the server.`,
 	return c
 }
 
-// resolveFeedbackText collects the feedback body from exactly ONE of
-// (positional arg, --text flag, stdin via "-"). Multiple sources or
-// missing input both return an error so the agent never wonders which
-// one won. stdin is only consulted when the positional is the literal
-// "-" (matches `kubectl apply -f -` convention).
-func resolveFeedbackText(args []string, textFlag string, stdin io.Reader) (string, error) {
+// resolveSingleTextInput collects a body from exactly ONE of (positional
+// arg, --text flag, stdin via "-"). Multiple sources or missing input
+// both return an error so the agent never wonders which one won. stdin is
+// only consulted when the positional is the literal "-" (matches `kubectl
+// apply -f -` convention).
+func resolveSingleTextInput(label string, args []string, textFlag string, stdin io.Reader) (string, error) {
 	positional := ""
 	stdinRequested := false
 	if len(args) == 1 {
 		if args[0] == "-" {
 			stdinRequested = true
 		} else {
-			positional = args[0]
+			positional = strings.TrimSpace(args[0])
 		}
 	}
+	textFlag = strings.TrimSpace(textFlag)
 
 	provided := 0
 	if positional != "" {
@@ -108,7 +123,7 @@ func resolveFeedbackText(args []string, textFlag string, stdin io.Reader) (strin
 	}
 
 	if provided == 0 {
-		return "", fmt.Errorf("feedback text is required (pass as positional arg, --text, or pipe via '-')")
+		return "", fmt.Errorf("%s is required (pass as positional arg, --text, or pipe via '-')", label)
 	}
 	if provided > 1 {
 		return "", fmt.Errorf("pick exactly one input form: positional, --text, or stdin via '-'")
@@ -131,9 +146,3 @@ func resolveFeedbackText(args []string, textFlag string, stdin io.Reader) (strin
 		return positional, nil
 	}
 }
-
-// readStdinIfAttached is exposed for tests that need to short-circuit
-// stdin handling. Unused in production paths — production runs go
-// through resolveFeedbackText directly.
-var _ = bufio.NewReader
-var _ = os.Stdin
