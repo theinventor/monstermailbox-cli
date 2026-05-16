@@ -81,6 +81,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newReplyToEmailAliasCmd())
 	root.AddCommand(newGuidanceCmd())
 	root.AddCommand(newWebhookCmd())
+	root.AddCommand(newContactCmd())
 	root.AddCommand(newAgentProductFeedbackCmd())
 	root.AddCommand(newQuarantineCmd())
 	root.AddCommand(newFeedbackCmd())

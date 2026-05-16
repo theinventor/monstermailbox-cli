@@ -32,7 +32,7 @@ const AgentContextSchemaVersion = "1"
 //	  "enums":           { name: [...] },
 //	  "exit_codes":      { "0": "success", "4": "resource not found", ... },
 //	  "available_profiles": [...],
-//	  "endpoints":       { "feedback_upstream": null }
+//	  "endpoints":       { "feedback_upstream": null, "product_feedback": "/agent_product_feedback", "support_intake": "/send" }
 //	}
 //
 // Walks the cobra command tree at runtime — no codegen, no schema file
@@ -85,6 +85,11 @@ func buildAgentContext(root *cobra.Command) map[string]any {
 		"available_profiles": availableProfiles(),
 		"endpoints": map[string]any{
 			"feedback_upstream": feedbackUpstreamForContext(),
+			"product_feedback":  "/agent_product_feedback",
+			"support_intake": map[string]any{
+				"path": "/send",
+				"to":   supportIntakeAddress,
+			},
 		},
 	}
 }

@@ -56,12 +56,42 @@ func TestAgentContext_EnumeratesEveryTopLevelCommand(t *testing.T) {
 		// new-email tertiary. The pre-v0.7 reply-to-email alias is
 		// hidden and MUST NOT show up here.
 		"reply-all", "reply-not-all-with-custom-recipients", "new-email",
-		"guidance", "agent-product-feedback", "quarantine",
+		"guidance", "contact", "agent-product-feedback", "quarantine",
+		"feedback",
 	}
 	for _, name := range want {
 		if _, present := commands[name]; !present {
 			t.Errorf("commands MUST include %q (full set: %v)", name, keysOf(commands))
 		}
+	}
+}
+
+func TestAgentContext_ContactSurfaceDocumentsSupportAndProductFeedback(t *testing.T) {
+	ctx := runAgentContext(t)
+	commands := ctx["commands"].(map[string]any)
+	contact := commands["contact"].(map[string]any)
+	subs := contact["subcommands"].(map[string]any)
+
+	support := subs["support"].(map[string]any)
+	supportFlags := support["flags"].(map[string]any)
+	for _, name := range []string{"--subject", "--text", "--idempotency-key", "--dry-run"} {
+		if _, has := supportFlags[name]; !has {
+			t.Errorf("contact support agent-context MUST expose %s; flags=%v", name, keysOf(supportFlags))
+		}
+	}
+	if args := support["args"]; args != "[text]" {
+		t.Errorf("contact support args = %v; want [text]", args)
+	}
+
+	product := subs["product-feedback"].(map[string]any)
+	productFlags := product["flags"].(map[string]any)
+	for _, name := range []string{"--text", "--idempotency-key", "--dry-run"} {
+		if _, has := productFlags[name]; !has {
+			t.Errorf("contact product-feedback agent-context MUST expose %s; flags=%v", name, keysOf(productFlags))
+		}
+	}
+	if args := product["args"]; args != "[text]" {
+		t.Errorf("contact product-feedback args = %v; want [text]", args)
 	}
 }
 
@@ -210,6 +240,21 @@ func TestAgentContext_FeedbackUpstreamReflectsEnvVar(t *testing.T) {
 	endpoints, _ = ctx["endpoints"].(map[string]any)
 	if v, _ := endpoints["feedback_upstream"].(string); v != "https://maintainers.example.com/cli-feedback" {
 		t.Errorf("feedback_upstream did not pick up env var; got %v", endpoints["feedback_upstream"])
+	}
+}
+
+func TestAgentContext_ExposesContactEndpoints(t *testing.T) {
+	ctx := runAgentContext(t)
+	endpoints, _ := ctx["endpoints"].(map[string]any)
+	if got := endpoints["product_feedback"]; got != "/agent_product_feedback" {
+		t.Errorf("product_feedback endpoint = %v; want /agent_product_feedback", got)
+	}
+	support, ok := endpoints["support_intake"].(map[string]any)
+	if !ok {
+		t.Fatalf("support_intake MUST be an endpoint descriptor; got %T", endpoints["support_intake"])
+	}
+	if support["path"] != "/send" || support["to"] != supportIntakeAddress {
+		t.Errorf("support_intake endpoint mismatch; got %v", support)
 	}
 }
 
