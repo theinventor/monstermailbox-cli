@@ -202,6 +202,7 @@ a teammate, etc.), use 'mmb auth save' instead.`,
 			fmt.Fprintf(out, "  human_owner_status: %s\n", reg.HumanOwnerStatus)
 			fmt.Fprintf(out, "  api_key fingerprint: %s\n", maskKey(reg.APIKey))
 			fmt.Fprintf(out, "\nYou can now run `mmb whoami`, `mmb inbox list`, etc. — no env vars needed.\n")
+			printSkillSetupReminder(out)
 			return nil
 		},
 	}
@@ -257,6 +258,7 @@ to keep it in the mode-0600 config file instead.`,
 			}
 			fmt.Fprintf(out, "  api_url: %s\n", apiURL)
 			fmt.Fprintf(out, "  api_key fingerprint: %s\n", maskKey(apiKey))
+			printSkillSetupReminder(out)
 			return nil
 		},
 	}

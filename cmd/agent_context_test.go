@@ -50,7 +50,7 @@ func TestAgentContext_EnumeratesEveryTopLevelCommand(t *testing.T) {
 		t.Fatalf("commands MUST be a map; got %T", ctx["commands"])
 	}
 	want := []string{
-		"agent-context", "auth", "whoami", "register", "update",
+		"agent-context", "skill", "auth", "whoami", "register", "update",
 		"inbox", "msg", "expect", "whitelist", "send",
 		// Outbound surface: reply-all primary, narrow secondary,
 		// new-email tertiary. The pre-v0.7 reply-to-email alias is
