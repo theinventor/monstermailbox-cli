@@ -83,6 +83,12 @@ func buildAgentContext(root *cobra.Command) map[string]any {
 		"enums":              enums.InContext,
 		"exit_codes":         exitCodes,
 		"available_profiles": availableProfiles(),
+		"resources": map[string]any{
+			"sample_skill": map[string]any{
+				"command":     sampleSkillCommand,
+				"description": "Bundled OpenClaw sample skill for MonsterMailbox agents; replace HUMAN_OWNER_NAME before use.",
+			},
+		},
 		"endpoints": map[string]any{
 			"feedback_upstream": feedbackUpstreamForContext(),
 		},

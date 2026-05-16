@@ -60,6 +60,7 @@ func NewRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&rootProfile, "profile", "", "saved auth profile to use for this invocation")
 
 	root.AddCommand(newAgentContextCmd())
+	root.AddCommand(newSkillCmd())
 	root.AddCommand(newAuthCmd())
 	root.AddCommand(newWhoamiCmd())
 	root.AddCommand(newRegisterCmd())
