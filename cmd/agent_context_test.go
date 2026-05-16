@@ -249,12 +249,8 @@ func TestAgentContext_ExposesContactEndpoints(t *testing.T) {
 	if got := endpoints["product_feedback"]; got != "/agent_product_feedback" {
 		t.Errorf("product_feedback endpoint = %v; want /agent_product_feedback", got)
 	}
-	support, ok := endpoints["support_intake"].(map[string]any)
-	if !ok {
-		t.Fatalf("support_intake MUST be an endpoint descriptor; got %T", endpoints["support_intake"])
-	}
-	if support["path"] != "/send" || support["to"] != supportIntakeAddress {
-		t.Errorf("support_intake endpoint mismatch; got %v", support)
+	if got := endpoints["support_intake"]; got != supportIntakePath {
+		t.Errorf("support_intake endpoint = %v; want %s", got, supportIntakePath)
 	}
 }
 

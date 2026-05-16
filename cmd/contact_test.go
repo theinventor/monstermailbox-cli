@@ -30,22 +30,22 @@ func TestContactProductFeedbackPostsToProductEndpoint(t *testing.T) {
 func TestContactSupportPostsToSupportIntakePath(t *testing.T) {
 	_, cap, err := runCmd(t,
 		[]string{"contact", "support", "--subject", "webhook retries", "what happened to delivery abc?"},
-		202, `{"status":"queued"}`)
+		201, `{"received":true,"message":"support request received"}`)
 	if err != nil {
 		t.Fatalf("returned error: %v", err)
 	}
-	if cap.method != http.MethodPost || cap.path != "/send" {
-		t.Errorf("expected POST /send; got %s %s", cap.method, cap.path)
+	if cap.method != http.MethodPost || cap.path != supportIntakePath {
+		t.Errorf("expected POST %s; got %s %s", supportIntakePath, cap.method, cap.path)
 	}
 	body := decodeBody(t, cap.body)
-	if body["to"] != supportIntakeAddress {
-		t.Errorf("support contact MUST route to the support intake address; got: %v", body["to"])
+	if _, has := body["to"]; has {
+		t.Errorf("support contact MUST NOT expose support routing in the CLI payload; got to=%v", body["to"])
 	}
 	if body["subject"] != "webhook retries" {
 		t.Errorf("subject mismatch; got: %v", body["subject"])
 	}
-	if body["body_text"] != "what happened to delivery abc?" {
-		t.Errorf("body_text mismatch; got: %v", body["body_text"])
+	if body["text"] != "what happened to delivery abc?" {
+		t.Errorf("text mismatch; got: %v", body["text"])
 	}
 }
 
@@ -57,8 +57,8 @@ func TestContactSupportTextFlagFormSends(t *testing.T) {
 		t.Fatalf("returned error: %v", err)
 	}
 	body := decodeBody(t, cap.body)
-	if body["body_text"] != "cannot claim my agent" {
-		t.Errorf("--text MUST land on body_text; got: %v", body["body_text"])
+	if body["text"] != "cannot claim my agent" {
+		t.Errorf("--text MUST land on text; got: %v", body["text"])
 	}
 }
 
@@ -69,8 +69,8 @@ func TestContactSupportStdinFormSends(t *testing.T) {
 		cap.method = r.Method
 		cap.path = r.URL.Path
 		cap.body, _ = readAll(r)
-		w.WriteHeader(202)
-		_, _ = w.Write([]byte(`{"status":"queued"}`))
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"received":true,"message":"support request received"}`))
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv(client.EnvAPIURL, srv.URL)
@@ -87,15 +87,15 @@ func TestContactSupportStdinFormSends(t *testing.T) {
 		t.Fatalf("returned error: %v", err)
 	}
 	body := decodeBody(t, cap.body)
-	if body["body_text"] != "piped support question" {
-		t.Errorf("stdin MUST be trimmed and sent as body_text; got: %v", body["body_text"])
+	if body["text"] != "piped support question" {
+		t.Errorf("stdin MUST be trimmed and sent as text; got: %v", body["text"])
 	}
 }
 
 func TestContactSupportDryRunSkipsHTTP(t *testing.T) {
 	stdout, cap, err := runCmd(t,
 		[]string{"contact", "support", "--subject", "webhook retries", "--text", "question", "--dry-run", "--idempotency-key", "contact-1"},
-		202, `should-never-fire`)
+		201, `should-never-fire`)
 	if err != nil {
 		t.Fatalf("dry-run returned error: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestContactSupportDryRunSkipsHTTP(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
 		t.Fatalf("dry-run stdout MUST be JSON; got %q err=%v", stdout, err)
 	}
-	if !env.DryRun || env.Method != http.MethodPost || env.Path != "/send" {
+	if !env.DryRun || env.Method != http.MethodPost || env.Path != supportIntakePath {
 		t.Errorf("bad dry-run envelope: %+v", env)
 	}
 	if env.IdempotencyKey != "contact-1" || env.Headers["Idempotency-Key"] != "contact-1" {

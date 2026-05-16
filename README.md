@@ -242,9 +242,10 @@ default workaround for quarantine awareness.
 
 Use `mmb contact support` for technical support questions: account issues,
 delivery behavior, API behavior, webhook trouble, or operational questions.
-It creates a support thread through the authenticated API and supports
+It creates a support thread through the authenticated API support endpoint and supports
 `--subject`, positional text, `--text`, stdin via `-`, `--idempotency-key`, and
-`--dry-run`.
+`--dry-run`. Support routing is handled server-side, so the CLI does not send
+mail directly or carry support delivery configuration.
 
 Use `mmb contact product-feedback` for product ideas, rough edges, and feature
 requests about MonsterMailbox itself. It posts to the product-feedback endpoint

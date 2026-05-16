@@ -9,7 +9,7 @@ import (
 	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 )
 
-const supportIntakeAddress = "support@monstermailbox.com"
+const supportIntakePath = "/contact_support"
 
 func newContactCmd() *cobra.Command {
 	c := &cobra.Command{
@@ -66,13 +66,13 @@ is attached by the API request; do not include secrets in the message.`,
 			payload := supportPayload(subject, body)
 			if mf.DryRun {
 				return printJSON(cmd.OutOrStdout(),
-					newDryRunEnvelope(http.MethodPost, "/send", payload, mf))
+					newDryRunEnvelope(http.MethodPost, supportIntakePath, payload, mf))
 			}
 
 			cli := newAPIClient()
-			resp, err := cli.DoWithHeaders(http.MethodPost, "/send", payload, nil, mf.Headers())
+			resp, err := cli.DoWithHeaders(http.MethodPost, supportIntakePath, payload, nil, mf.Headers())
 			if err != nil {
-				return fmt.Errorf("POST /send: %w", err)
+				return fmt.Errorf("POST %s: %w", supportIntakePath, err)
 			}
 			defer resp.Body.Close()
 			return passthroughJSON(cmd.OutOrStdout(), resp)
@@ -86,8 +86,7 @@ is attached by the API request; do not include secrets in the message.`,
 
 func supportPayload(subject, body string) map[string]any {
 	return map[string]any{
-		"to":        supportIntakeAddress,
-		"subject":   subject,
-		"body_text": body,
+		"subject": subject,
+		"text":    body,
 	}
 }
