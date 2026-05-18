@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/spf13/cobra"
 	"github.com/theinventor/monstermailbox-cli/internal/client"
 	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
-	"github.com/spf13/cobra"
 )
 
 // `mmb register --address <local-part> --email <owner>` → POST /agents/register.
@@ -42,6 +42,9 @@ This command does NOT use MONSTERMAILBOX_API_KEY (the endpoint is public).`,
 			if address == "" || email == "" {
 				return exitcode.Wrap(exitcode.Usage,
 					fmt.Errorf("--address and --email are both required"))
+			}
+			if err := validateHumanOwnerEmail(email); err != nil {
+				return err
 			}
 			payload := map[string]any{
 				"desired_address": address,

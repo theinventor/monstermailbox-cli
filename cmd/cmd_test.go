@@ -150,6 +150,65 @@ func TestEmpty4xxReturnsHelpfulErrorWithURL(t *testing.T) {
 	}
 }
 
+func TestRegister_BlockedOwnerEmailsFailBeforeRequest(t *testing.T) {
+	cases := []string{
+		"troy@example.com",
+		"troy@example.org",
+		"troy@example.net",
+		"troy@test.invalid",
+		"troy@localhost",
+		"troy@mail.localhost",
+		"troy@mail.localdomain",
+		"no-reply@ownerdomain.com",
+		"noreply+agent@ownerdomain.com",
+		"notifications@ownerdomain.com",
+		"bot@ownerdomain.com",
+	}
+	for _, email := range cases {
+		t.Run(email, func(t *testing.T) {
+			_, stderr, cap, err := runCmdSplit(t, []string{"register", "--address", "x", "--email", email},
+				http.StatusCreated, `{"ok":true}`)
+			if err == nil {
+				t.Fatalf("register with blocked owner email should fail")
+			}
+			if cap.hits != 0 {
+				t.Fatalf("blocked owner email should make no HTTP requests; got %d", cap.hits)
+			}
+			if !strings.Contains(stderr, "real human owner email") || !strings.Contains(stderr, "actual human owner's email") {
+				t.Fatalf("error should explain the owner email rule; stderr=%q err=%v", stderr, err)
+			}
+		})
+	}
+}
+
+func TestRegister_BlockedOwnerEmailDryRunFailsBeforeEnvelope(t *testing.T) {
+	stdout, stderr, cap, err := runCmdSplit(t, []string{"register", "--address", "x", "--email", "troy@example.com", "--dry-run"},
+		http.StatusCreated, `{"ok":true}`)
+	if err == nil {
+		t.Fatalf("register dry-run with blocked owner email should fail")
+	}
+	if cap.hits != 0 {
+		t.Fatalf("blocked owner email dry-run should make no HTTP requests; got %d", cap.hits)
+	}
+	if stdout != "" {
+		t.Fatalf("blocked owner email dry-run should not emit a request envelope; stdout=%q", stdout)
+	}
+	if !strings.Contains(stderr, "real human owner email") {
+		t.Fatalf("error should explain the owner email rule; stderr=%q err=%v", stderr, err)
+	}
+}
+
+func TestRegister_RealLookingOwnerEmailStillHitsRegisterPath(t *testing.T) {
+	_, cap, err := runCmd(t, []string{"register", "--address", "x", "--email", "owner@realcompany.dev"},
+		http.StatusCreated, `{"ok":true}`)
+	if err != nil {
+		t.Fatalf("register with real-looking owner email should proceed: %v", err)
+	}
+	if cap.hits != 1 || cap.method != http.MethodPost || cap.path != "/agents/register" {
+		t.Fatalf("register should hit POST /agents/register once; hits=%d method=%s path=%s", cap.hits, cap.method, cap.path)
+	}
+}
+
 // ── whoami ─────────────────────────────────────────────────────
 
 func TestWhoamiHitsVersionEndpoint(t *testing.T) {

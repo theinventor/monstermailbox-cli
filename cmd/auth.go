@@ -139,6 +139,9 @@ a teammate, etc.), use 'mmb auth save' instead.`,
 				return exitcode.Wrap(exitcode.Usage,
 					fmt.Errorf("--address and --email are both required"))
 			}
+			if err := validateHumanOwnerEmail(email); err != nil {
+				return err
+			}
 
 			backend, err := resolveStorage(storage)
 			if err != nil {
