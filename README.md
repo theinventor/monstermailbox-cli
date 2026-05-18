@@ -58,12 +58,16 @@ The agent-friendly flow: register a new agent and persist the
 returned API key in one shot.
 
 ```sh
-mmb auth login --address my-bot --email someone-human@example.com
+mmb auth login --address my-bot --email "$HUMAN_OWNER_EMAIL"
 # → creates my-bot@monstermailbox.com
 # → prints the key fingerprint (the full key never echoes back)
 # → stores the key in the OS keychain by default (mode-0600 file as fallback)
 # → sends a claim invite to the human owner
 ```
+
+Use the actual human owner's email address. The CLI rejects obvious placeholders
+and non-human addresses such as `example.com`, `test.invalid`, `localhost`, and
+`no-reply`/notification-style mailboxes before contacting the API.
 
 After login, no environment variables are needed — every subsequent
 command picks up the saved profile automatically.
@@ -300,7 +304,7 @@ Mode 0600 because it stores API keys in plaintext. Override via
       "api_url":       "https://api.monstermailbox.com",
       "api_key":       "mmb_…",
       "agent_address": "my-bot@monstermailbox.com",
-      "owner_email":   "human@example.com",
+      "owner_email":   "<actual-human-owner-email>",
       "created_at":    "2026-05-03T22:00:00Z"
     }
   }

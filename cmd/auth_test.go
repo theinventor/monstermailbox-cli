@@ -360,7 +360,7 @@ func TestAuthLogin_RegistersAndSavesProfile(t *testing.T) {
 	stdout, _, err := runMmbCmd(t, []string{
 		"auth", "login",
 		"--address", "ada",
-		"--email", "ada@example.com",
+		"--email", "ada@lovelace.dev",
 	}, nil)
 	if err != nil {
 		t.Fatalf("auth login: %v", err)
@@ -375,6 +375,36 @@ func TestAuthLogin_RegistersAndSavesProfile(t *testing.T) {
 	}
 	if parsed.DefaultProfile != "ada" {
 		t.Errorf("first profile should be default; got %q", parsed.DefaultProfile)
+	}
+}
+
+func TestAuthLogin_BlockedOwnerEmailFailsBeforeRequest(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("MMB_CONFIG", cfg)
+	t.Setenv("MONSTERMAILBOX_API_KEY", "")
+
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		t.Errorf("auth login should reject blocked owner email before HTTP request; got %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	t.Setenv("MONSTERMAILBOX_API_URL", server.URL)
+
+	_, stderr, err := runMmbCmd(t, []string{
+		"auth", "login",
+		"--address", "troy",
+		"--email", "troy@example.com",
+	}, nil)
+	if err == nil {
+		t.Fatalf("auth login with placeholder owner email should fail")
+	}
+	if hits != 0 {
+		t.Fatalf("blocked owner email should make no HTTP requests; got %d", hits)
+	}
+	if !strings.Contains(err.Error(), "real human owner email") || !strings.Contains(err.Error(), "actual human owner's email") {
+		t.Fatalf("error should explain the owner email rule; err=%v stderr=%q", err, stderr)
 	}
 }
 

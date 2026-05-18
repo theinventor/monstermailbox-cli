@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added CLI-side owner email preflight for `mmb auth login` and `mmb register`.
+  The CLI now rejects obvious placeholder/reserved domains and no-reply-style
+  owner mailboxes before any registration request, so agents do not create
+  inboxes or API keys with a mistaken non-human owner address.
 - Added `mmb contact support` for first-class technical support questions from
   the CLI. It posts `{text, subject}` to the authenticated `/contact_support`
   API so support email routing stays server-side, emits JSON, supports stdin or
