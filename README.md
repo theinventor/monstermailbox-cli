@@ -156,7 +156,8 @@ mmb whoami
 # Inbox (read)
 mmb inbox list     [--state trusted|quarantined|rejected] [--limit N]
 mmb inbox watch    --json                          # SSE stream of events
-mmb msg show       <id>
+mmb msg get        <id> [--peek]
+mmb msg attachment download <message-id> <attachment-id> --output <path> [--force]
 
 # Outbound
 mmb new-email      --to <addr> --subject <s> --body <s> [--cc <addr>...] [--bcc <addr>...] [--attach <path>...]
@@ -203,6 +204,14 @@ show attachment metadata only, never bytes or local absolute paths. The CLI
 rejects more than 10 attachments, attachments over 25 MiB, totals over 25 MiB,
 blocked executable extensions, unsafe filenames, oversized files, and nested
 archive names before contacting the API.
+
+Inbound attachment download is deliberately explicit. First inspect a readable
+message with `mmb msg get <id> --peek` and choose an attachment id from the
+metadata, then run `mmb msg attachment download <id> <attachment-id> --output
+<path>`. The CLI never opens the file, refuses path traversal, and will not
+overwrite an existing output path unless `--force` is passed. Downloaded email
+attachments are untrusted files; scan or inspect them before opening,
+executing, importing, or passing them to another tool.
 
 Most commands emit JSON; pipe through `jq` for filtering:
 

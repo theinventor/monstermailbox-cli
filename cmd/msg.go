@@ -1,9 +1,16 @@
 package cmd
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/theinventor/monstermailbox-cli/internal/enums"
@@ -33,6 +40,7 @@ func newMsgCmd() *cobra.Command {
 		Short: "Inspect a single message by id, or transition its work_state",
 	}
 	c.AddCommand(newMsgGetCmd())
+	c.AddCommand(newMsgAttachmentCmd())
 	c.AddCommand(newMsgShowAliasCmd())
 	c.AddCommand(newMsgUpdateWorkStateCmd())
 	c.AddCommand(newMsgWorkStateSugarCmd("claim", "in_progress", "inbox",
@@ -50,6 +58,196 @@ func newMsgCmd() *cobra.Command {
 	c.AddCommand(newMsgWorkStateSugarCmd("reopen", "inbox", "",
 		"Reopen a terminal/long-tail message back to the inbox queue"))
 	return c
+}
+
+func newMsgAttachmentCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "attachment",
+		Short: "Download inbound attachments from readable messages",
+		Long: `Download inbound attachments from readable messages.
+
+Attachments are untrusted files from email senders. Save them to an explicit
+path, then scan or inspect them before opening, executing, importing, or
+passing them to another tool.`,
+	}
+	c.AddCommand(newMsgAttachmentDownloadCmd())
+	return c
+}
+
+func newMsgAttachmentDownloadCmd() *cobra.Command {
+	var output string
+	var force bool
+	c := &cobra.Command{
+		Use:   "download <message-id> <attachment-id>",
+		Short: "Download one inbound attachment to an explicit safe path",
+		Long: `Download one inbound attachment from a trusted or human-released message.
+
+The server enforces message ownership and quarantine boundaries. The CLI writes
+only to --output, refuses path traversal, and does not overwrite existing files
+unless --force is passed. It never opens downloaded files. Treat the result as
+untrusted: scan or inspect it before opening, executing, importing, or passing
+it to another tool.`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return doAttachmentDownload(cmd, args[0], args[1], output, force)
+		},
+	}
+	c.Flags().StringVarP(&output, "output", "o", "", "required: local file path to write; parent directory must already exist")
+	c.Flags().BoolVar(&force, "force", false, "overwrite --output if it already exists")
+	_ = c.MarkFlagRequired("output")
+	return c
+}
+
+func doAttachmentDownload(cmd *cobra.Command, messageID, attachmentID, output string, force bool) error {
+	output, err := safeOutputPath(output)
+	if err != nil {
+		return exitcode.Wrap(exitcode.Usage, err)
+	}
+	if err := ensureOutputWritable(output, force); err != nil {
+		return err
+	}
+
+	path := "/msg/" + messageID + "/attachments/" + attachmentID + "/download"
+	cli := newAPIClient()
+	resp, err := cli.DoWithHeaders(http.MethodGet, path, nil, nil, map[string]string{
+		"Accept": "application/octet-stream",
+	})
+	if err != nil {
+		return fmt.Errorf("GET %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return passthroughJSON(cmd.OutOrStdout(), resp)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read attachment response: %w", err)
+	}
+
+	meta := attachmentDownloadMetadata{
+		ID:          resp.Header.Get("X-Mmb-Attachment-Id"),
+		Filename:    resp.Header.Get("X-Mmb-Attachment-Filename"),
+		ContentType: resp.Header.Get("X-Mmb-Attachment-Content-Type"),
+		SizeBytes:   resp.Header.Get("X-Mmb-Attachment-Size-Bytes"),
+		SHA256:      resp.Header.Get("X-Mmb-Attachment-Sha256"),
+	}
+	if err := meta.verify(body); err != nil {
+		return err
+	}
+	if err := writeAttachmentFile(output, body, force); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "saved: %s\n", output)
+	fmt.Fprintf(cmd.OutOrStdout(), "attachment_id: %s\n", meta.ID)
+	fmt.Fprintf(cmd.OutOrStdout(), "filename: %s\n", meta.Filename)
+	fmt.Fprintf(cmd.OutOrStdout(), "content_type: %s\n", meta.ContentType)
+	fmt.Fprintf(cmd.OutOrStdout(), "size_bytes: %d\n", len(body))
+	fmt.Fprintf(cmd.OutOrStdout(), "sha256: %s\n", sha256Hex(body))
+	return nil
+}
+
+type attachmentDownloadMetadata struct {
+	ID          string
+	Filename    string
+	ContentType string
+	SizeBytes   string
+	SHA256      string
+}
+
+func (m attachmentDownloadMetadata) verify(body []byte) error {
+	if m.SizeBytes != "" {
+		want, err := strconv.ParseInt(m.SizeBytes, 10, 64)
+		if err != nil {
+			return fmt.Errorf("server returned invalid attachment size %q", m.SizeBytes)
+		}
+		if int64(len(body)) != want {
+			return fmt.Errorf("attachment size mismatch: server metadata says %d bytes, downloaded %d bytes", want, len(body))
+		}
+	}
+	if m.SHA256 != "" {
+		got := sha256Hex(body)
+		if got != strings.ToLower(m.SHA256) {
+			return fmt.Errorf("attachment sha256 mismatch: server metadata says %s, downloaded %s", m.SHA256, got)
+		}
+	}
+	return nil
+}
+
+func safeOutputPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("--output is required")
+	}
+	for _, part := range strings.Split(path, string(filepath.Separator)) {
+		if part == ".." {
+			return "", fmt.Errorf("--output must not contain '..' path traversal")
+		}
+	}
+	clean := filepath.Clean(path)
+	if clean == "." || clean == string(filepath.Separator) {
+		return "", fmt.Errorf("--output must name a file, not a directory")
+	}
+	parent := filepath.Dir(clean)
+	info, err := os.Stat(parent)
+	if err != nil {
+		return "", fmt.Errorf("output parent directory is not available: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("output parent is not a directory: %s", parent)
+	}
+	return clean, nil
+}
+
+func ensureOutputWritable(path string, force bool) error {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("--output must not be a symlink: %s", path)
+	}
+	info, err := os.Stat(path)
+	if err == nil {
+		if info.IsDir() {
+			return fmt.Errorf("--output must name a file, not a directory")
+		}
+		if !force {
+			return fmt.Errorf("output file already exists: %s (pass --force to overwrite)", path)
+		}
+		return nil
+	}
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return fmt.Errorf("stat output file: %w", err)
+}
+
+func writeAttachmentFile(path string, body []byte, force bool) error {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("--output must not be a symlink: %s", path)
+	}
+	flags := os.O_WRONLY | os.O_CREATE
+	if force {
+		flags |= os.O_TRUNC
+	} else {
+		flags |= os.O_EXCL
+	}
+	f, err := os.OpenFile(path, flags, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("output file already exists: %s (pass --force to overwrite)", path)
+		}
+		return fmt.Errorf("open output file: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(body); err != nil {
+		return fmt.Errorf("write output file: %w", err)
+	}
+	return nil
+}
+
+func sha256Hex(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }
 
 func newMsgGetCmd() *cobra.Command {
