@@ -127,6 +127,30 @@ func TestAgentContext_OmitsHiddenAliases(t *testing.T) {
 	}
 }
 
+func TestAgentContext_ExposesInboundAttachmentDownload(t *testing.T) {
+	ctx := runAgentContext(t)
+	commands := ctx["commands"].(map[string]any)
+	msg := commands["msg"].(map[string]any)
+	msgSubs := msg["subcommands"].(map[string]any)
+	attachment := msgSubs["attachment"].(map[string]any)
+	attachmentSubs := attachment["subcommands"].(map[string]any)
+	download := attachmentSubs["download"].(map[string]any)
+
+	if args := download["args"]; args != "<message-id> <attachment-id>" {
+		t.Errorf("download args = %v; want <message-id> <attachment-id>", args)
+	}
+	flags := download["flags"].(map[string]any)
+	for _, name := range []string{"--output", "--force"} {
+		if _, has := flags[name]; !has {
+			t.Errorf("msg attachment download agent-context MUST expose %s; flags=%v", name, keysOf(flags))
+		}
+	}
+	desc := download["description"].(string)
+	if !strings.Contains(desc, "untrusted") || !strings.Contains(desc, "scan or inspect") {
+		t.Errorf("download description MUST warn about untrusted files; got %q", desc)
+	}
+}
+
 func TestAgentContext_WhitelistCreateDocumentsSenderFlags(t *testing.T) {
 	ctx := runAgentContext(t)
 	commands := ctx["commands"].(map[string]any)
