@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added staff-only webhook recovery commands under `mmb staff
+  webhook-deliveries`. Operators with staff API keys can list failed/gave-up
+  deliveries, inspect redacted metadata, and redrive one real delivery with
+  explicit confirmation plus an idempotency key, without exposing payload bodies
+  receiver response bodies, or webhook secrets in CLI output.
 - Added `mmb msg attachment download <message-id> <attachment-id> --output
   <path>` for safe inbound attachment retrieval. The API still enforces
   message readability and tenant ownership; the CLI requires an explicit output

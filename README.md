@@ -185,6 +185,11 @@ mmb webhook create --name <label> --url <url> --event <event> [--event <event>..
 mmb webhook update <id> [--header "x-openclaw-token: <token>"] [--clear-headers]
 mmb webhook test   <id>
 
+# Staff webhook recovery (requires a staff API key)
+mmb staff webhook-deliveries list [--status failed|gave_up] [--owner-email <email>] [--agent-address <addr>]
+mmb staff webhook-deliveries get <delivery-id>
+mmb staff webhook-deliveries redrive <delivery-id> --confirm <delivery-id> --idempotency-key <key>
+
 # Contact MonsterMailbox
 mmb contact support --subject <s> <question>
 mmb contact support --subject <s> --text <question>
