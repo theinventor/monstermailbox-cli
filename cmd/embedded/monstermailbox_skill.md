@@ -1,6 +1,6 @@
 ---
 name: monstermailbox
-description: Work with MonsterMailbox agent email accounts using the official mmb CLI. Use when registering an agent inbox, loading or checking MONSTERMAILBOX_API_KEY, troubleshooting/authing the service, or when the user says “send an email” / wants outbound mail from *@monstermailbox.com. Do not silently fall back to Gmail; if MonsterMailbox is blocked, report the blocker and ask the user to fix it or explicitly choose another mailbox.
+description: Work with MonsterMailbox agent email accounts using the official mmb CLI. Use when setting up or authenticating an agent inbox, loading or checking MONSTERMAILBOX_API_KEY, troubleshooting the service, or when the user says “send an email” / wants outbound mail from *@monstermailbox.com. Do not silently fall back to Gmail; if MonsterMailbox is blocked, report the blocker and ask the user to fix it or explicitly choose another mailbox.
 ---
 
 # MonsterMailbox
@@ -31,9 +31,54 @@ Use the official mmb CLI for MonsterMailbox.
 
 - CLI: mmb (official CLI on PATH, or fix it)
 
+## Agent-guided setup handoff
+
+If the human asks you to help set up MonsterMailbox, guide them through the
+canonical setup path rather than only listing raw commands:
+
+1. Explain that MonsterMailbox creates an agent mailbox governed by the human
+   owner, and that the human must complete the claim/adoption email before inbox
+   or outbound work is expected to function.
+2. Ask for the human owner email address and desired local address, for example
+   `build-bot` for `build-bot@monstermailbox.com`.
+3. With shell permission, run:
+   `mmb auth login --address <local_part> --email <human_owner_email>`.
+   If you do not have permission to run shell commands, ask the human to run it.
+4. Tell the human to open the claim/adoption email, finish account setup, and
+   adopt the agent mailbox.
+5. After adoption, run `mmb whoami` and `mmb agent-context` before expecting
+   inbox work, outbound mail, webhooks, or work-state updates to function.
+6. Install this bundled skill with `mmb skill get monstermailbox`, then replace
+   `HUMAN_OWNER_NAME` before relying on owner-specific routing rules.
+
+If an API key already exists, use `mmb auth save --profile <profile> --api-key
+<api_key> --api-url https://api.monstermailbox.com --agent-address
+<agent@monstermailbox.com>` instead of creating a new mailbox.
+
 ## Common commands
 
+- mmb auth login --address <local_part> --email <human_owner_email> — create a
+  governed agent mailbox, save the returned key, and send the claim/adoption
+  email to the human owner.
+- mmb auth save --profile PROFILE --api-key KEY --api-url URL --agent-address ADDRESS — persist an existing key without printing it in chat or logs.
 - mmb whoami — confirm the loaded identity, API target, and server status.
+- mmb agent-context — inspect the machine-readable command, flag, enum, profile,
+  and sample-skill surface before scripting.
+- mmb skill get monstermailbox — fetch this official sample skill.
+- mmb inbox list --work-state inbox — list readable messages still in the
+  agent's work queue.
+- mmb msg get MESSAGE_ID --peek — inspect a message/thread before deciding or
+  replying.
+- mmb msg claim MESSAGE_ID --note "..." — claim a message before acting.
+- mmb msg done|skip|block|defer MESSAGE_ID --note "..." — record the final
+  disposition after acting, refusing, escalating, or waiting.
+- mmb reply-all MESSAGE_ID --body "..." — reply to an existing thread; the
+  server computes recipients from the original participant set.
+- mmb new-email --to ADDR --subject "..." --body "..." — start a new thread.
+- mmb webhook create --name LABEL --url URL --event-preset trusted-inbox — wake
+  an agent for newly trusted readable mail.
+- mmb webhook create --name LABEL --url URL --event-preset quarantine-aware-inbox — also wake for quarantined/released mail without exposing held content.
+- mmb webhook test WEBHOOK_ID — fire a synthetic webhook delivery.
 - mmb --profile PROFILE whoami — confirm a saved profile for one invocation without changing the default profile.
 - mmb whitelist create sender@example.com — add an exact sender/domain whitelist rule; the CLI sends the API `sender` field.
 - mmb whitelist create --sender-regex REGEX [--subject-regex REGEX] — add an explicit regex whitelist rule; use only when exact sender trust is not sufficient.
@@ -43,6 +88,8 @@ Use the official mmb CLI for MonsterMailbox.
 - Root --profile works with authenticated commands and wins over MONSTERMAILBOX_API_KEY for that invocation; omit it to use env credentials first, then the config default profile.
 - Prefer mmb new-email for new threads and mmb reply-all for replies.
 - If the CLI can do it, use the CLI; do not reach for raw HTTP.
+- Use webhook event presets rather than hand-assembling event lists unless the
+  receiver truly needs custom observability.
 - For whitelist changes, prefer exact sender addresses over domain or regex rules. Use `whitelist create`, not the hidden deprecated `whitelist add` alias.
 - Treat trusted inbound mail from HUMAN_OWNER_NAME as a direct instruction channel: if a message asks for an action, or clearly implies one (for example, “I’ll have BOTNAME(you) add it to our calendar”), complete it with the relevant tool immediately rather than waiting for a separate chat message.
 - For normal outbound MonsterMailbox replies, default to --body-html with really beautiful styling, but no tricky hrefs. Use plain --body only when HTML is impossible or inappropriate.

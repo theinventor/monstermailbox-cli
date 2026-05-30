@@ -21,6 +21,34 @@ func TestSkillGet_PrintsMonsterMailboxSample(t *testing.T) {
 	if !strings.Contains(stdout, "SAMPLE_ACTIONS_SECTION") || !strings.Contains(stdout, "END_SAMPLE_ACTIONS_SECTION") {
 		t.Errorf("sample skill should include bounded sample actions section")
 	}
+	for _, want := range []string{
+		"mmb auth login --address <local_part> --email <human_owner_email>",
+		"mmb auth save --profile <profile>",
+		"mmb agent-context",
+		"mmb skill get monstermailbox",
+		"mmb inbox list --work-state inbox",
+		"mmb msg get MESSAGE_ID --peek",
+		"mmb msg claim MESSAGE_ID",
+		"mmb reply-all MESSAGE_ID",
+		"mmb new-email --to ADDR",
+		"mmb webhook create --name LABEL --url URL --event-preset trusted-inbox",
+		"mmb webhook create --name LABEL --url URL --event-preset quarantine-aware-inbox",
+		"claim/adoption email before inbox",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("sample skill missing canonical setup guidance %q", want)
+		}
+	}
+	for _, stale := range []string{
+		"mmb register --owner",
+		"mmb inbox show",
+		"mmb outbound pending",
+		"msg show",
+	} {
+		if strings.Contains(stdout, stale) {
+			t.Errorf("sample skill should not include stale guidance %q", stale)
+		}
+	}
 }
 
 func TestSkillGet_CanWriteOutputFile(t *testing.T) {
@@ -81,6 +109,44 @@ func TestAuthSave_PrintsSampleSkillReminder(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "Agent setup tip:") || !strings.Contains(stdout, sampleSkillCommand) {
 		t.Errorf("auth save should advertise sample skill setup; got: %s", stdout)
+	}
+}
+
+func TestReadmeDocumentsCanonicalAgentSetup(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme := string(body)
+	for _, want := range []string{
+		"## Agent-guided first setup",
+		"mmb auth login --address <local_part> --email <human_owner_email>",
+		"mmb auth save",
+		"mmb agent-context",
+		"mmb skill get monstermailbox",
+		"mmb msg get        <id> [--peek]",
+		"mmb inbox list     --work-state inbox",
+		"mmb msg claim      <id> --note <s>",
+		"mmb new-email      --to <addr>",
+		"mmb reply-all      <message-id>",
+		"mmb webhook create --name <label> --url <url> --event-preset trusted-inbox",
+		"mmb webhook create --name <label> --url <url> --event-preset quarantine-aware-inbox",
+		"claim/adoption email before inbox",
+	} {
+		if !strings.Contains(readme, want) {
+			t.Errorf("README missing canonical setup guidance %q", want)
+		}
+	}
+	for _, stale := range []string{
+		"mmb register --owner",
+		"mmb inbox show",
+		"mmb outbound pending",
+		"mmb send",
+		"msg show",
+	} {
+		if strings.Contains(readme, stale) {
+			t.Errorf("README should not include stale setup guidance %q", stale)
+		}
 	}
 }
 

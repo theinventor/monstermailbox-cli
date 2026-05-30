@@ -52,6 +52,40 @@ cd monstermailbox-cli
 go build -o ~/.local/bin/mmb .
 ```
 
+## Agent-guided first setup
+
+When a human asks an agent to help set up MonsterMailbox, the agent should guide
+the human through the tool-recommended path instead of only pasting commands:
+
+1. Explain that MonsterMailbox creates an agent mailbox controlled by the human
+   owner, and that the human must complete the claim/adoption email before inbox
+   or outbound work is expected to function.
+2. Ask for the human owner email address and the desired local address, for
+   example `build-bot` for `build-bot@monstermailbox.com`.
+3. Run the canonical setup command when the agent has permission to run shell
+   commands, or ask the human to run it:
+
+   ```sh
+   mmb auth login --address <local_part> --email <human_owner_email>
+   ```
+
+4. Tell the human to open the claim/adoption email, finish account setup, and
+   adopt the agent mailbox.
+5. After adoption, verify the saved identity and inspect the machine-readable
+   command surface:
+
+   ```sh
+   mmb whoami
+   mmb agent-context
+   ```
+
+6. Install the bundled sample skill and replace `HUMAN_OWNER_NAME` before using
+   it:
+
+   ```sh
+   mmb skill get monstermailbox
+   ```
+
 ## First-time auth — `mmb auth login`
 
 The agent-friendly flow: register a new agent and persist the
@@ -152,12 +186,25 @@ mmb auth migrate  --profile <name> | --all     # move file-backed keys to keycha
 
 # Identity & connectivity probe
 mmb whoami
+mmb agent-context
+
+# Agent setup resources
+mmb skill get monstermailbox
 
 # Inbox (read)
 mmb inbox list     [--state trusted|quarantined|rejected] [--limit N]
 mmb inbox watch    --json                          # SSE stream of events
 mmb msg get        <id> [--peek]
 mmb msg attachment download <message-id> <attachment-id> --output <path> [--force]
+
+# Agent-side work state
+mmb inbox list     --work-state inbox
+mmb msg claim      <id> --note <s>
+mmb msg done       <id> --note <s>
+mmb msg skip       <id> --note <s>
+mmb msg block      <id> --note <s>
+mmb msg defer      <id> --note <s>
+mmb msg update     <id> --work-state <state> --note <s>
 
 # Real inbox workflow test
 mmb test-email send [--idempotency-key <key>] [--dry-run]
@@ -169,8 +216,6 @@ mmb reply-all      <message-id>              --body <s> [--cc <addr>...] [--bcc 
                   # threading is automatic; subject + recipients are derived from the original
 mmb reply-not-all-with-custom-recipients <message-id> --to <addr> --body <s> [--attach <path>...]
                   # explicit recipient escape hatch; prefer reply-all unless you are intentionally narrowing
-mmb send           --to <addr> --subject <s> --body <s> [--in-reply-to <id>]
-                  # deprecated alias; new agents should use new-email / reply-all
 
 # Policy
 mmb whitelist create <sender-email-or-domain>                # exact sender/domain trust rule
@@ -347,10 +392,10 @@ cli/mmb/
 │   ├── whoami.go
 │   ├── register.go            (low-level POST /agents/register; auth login wraps it)
 │   ├── inbox.go               (inbox list + inbox watch)
-│   ├── msg.go                 (msg show)
+│   ├── msg.go                 (msg get + work_state transitions)
 │   ├── expect.go
 │   ├── whitelist.go
-│   ├── send.go                (deprecated)
+│   ├── send.go                (hidden deprecated alias; new docs use new-email / reply-all)
 │   ├── new_email.go
 │   ├── reply_to_email.go
 │   ├── quarantine.go
