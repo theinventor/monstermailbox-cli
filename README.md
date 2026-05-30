@@ -206,6 +206,10 @@ mmb msg block      <id> --note <s>
 mmb msg defer      <id> --note <s>
 mmb msg update     <id> --work-state <state> --note <s>
 
+# Real inbox workflow test
+mmb test-email send [--idempotency-key <key>] [--dry-run]
+                  # creates a safe synthetic Message and emits normal inbox.new with data.test=true
+
 # Outbound
 mmb new-email      --to <addr> --subject <s> --body <s> [--cc <addr>...] [--bcc <addr>...] [--attach <path>...]
 mmb reply-all      <message-id>              --body <s> [--cc <addr>...] [--bcc <addr>...] [--attach <path>...]
@@ -246,6 +250,13 @@ echo "<feedback>" | mmb contact product-feedback -
 # Local CLI feedback ledger
 mmb feedback "the CLI help for --tier is confusing"
 ```
+
+`mmb test-email send` is the setup-loop companion to `mmb webhook test`.
+It does not send external email. The server creates a trusted, fetchable
+synthetic inbox `Message`, emits a normal `inbox.new` webhook payload with
+`data.test=true`, and returns JSON with `message_id`, `event_id`,
+`webhook_delivery_expected`, and next-step hints such as
+`mmb msg get <message_id> --peek`.
 
 Outbound attachment flags read local files and send them to the API as safe
 attachment objects: basename filename, detected content type, size, and base64

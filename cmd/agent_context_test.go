@@ -51,7 +51,7 @@ func TestAgentContext_EnumeratesEveryTopLevelCommand(t *testing.T) {
 	}
 	want := []string{
 		"agent-context", "skill", "auth", "whoami", "register", "update",
-		"inbox", "msg", "expect", "whitelist", "send",
+		"inbox", "msg", "test-email", "expect", "whitelist", "send",
 		// Outbound surface: reply-all primary, narrow secondary,
 		// new-email tertiary. The pre-v0.7 reply-to-email alias is
 		// hidden and MUST NOT show up here.
@@ -62,6 +62,27 @@ func TestAgentContext_EnumeratesEveryTopLevelCommand(t *testing.T) {
 	for _, name := range want {
 		if _, present := commands[name]; !present {
 			t.Errorf("commands MUST include %q (full set: %v)", name, keysOf(commands))
+		}
+	}
+}
+
+func TestAgentContext_TestEmailSendDocumentsSetupContract(t *testing.T) {
+	ctx := runAgentContext(t)
+	commands := ctx["commands"].(map[string]any)
+	testEmail := commands["test-email"].(map[string]any)
+	subs := testEmail["subcommands"].(map[string]any)
+	send := subs["send"].(map[string]any)
+	flags := send["flags"].(map[string]any)
+
+	for _, name := range []string{"--idempotency-key", "--dry-run"} {
+		if _, has := flags[name]; !has {
+			t.Errorf("test-email send agent-context MUST expose %s; flags=%v", name, keysOf(flags))
+		}
+	}
+	desc := send["description"].(string)
+	for _, want := range []string{"Message", "inbox.new", "data.test=true", "mmb msg get <id>"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("test-email send description MUST mention %q; got %q", want, desc)
 		}
 	}
 }
