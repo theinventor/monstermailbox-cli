@@ -86,6 +86,25 @@ the human through the tool-recommended path instead of only pasting commands:
    mmb skill get monstermailbox
    ```
 
+The deterministic setup loop is:
+
+```sh
+mmb agent-setup --address <local_part> --email <human_owner_email> \
+  --webhook-url https://your-receiver.example.com/mmb
+```
+
+`mmb agent-setup` is JSON-first and noninteractive. It reports stage status for
+the CLI/API target, saved profile/auth, human claim/adoption, agent-context,
+sample skill, webhook configuration, synthetic webhook delivery, real test
+email creation, `mmb msg get <id> --peek` message fetch, optional test-message
+work-state handling, and the final pass/fail result. By default it waits up to
+15 seconds for the synthetic webhook delivery to succeed, so a final `pass`
+proves the receiver accepted the signed webhook and the real inbox test message
+was fetched. Missing auth, unclaimed owners, unadopted agents, unreachable
+webhooks, missing backend test-email support, skipped verification, and
+unfetched test messages return actionable `needs_input`, `pending`, or `fail`
+stages with safe next commands.
+
 ## First-time auth — `mmb auth login`
 
 The agent-friendly flow: register a new agent and persist the
@@ -188,6 +207,10 @@ mmb auth migrate  --profile <name> | --all     # move file-backed keys to keycha
 mmb whoami
 mmb agent-context
 
+# Guided deterministic setup loop
+mmb agent-setup --address <local> --email <owner> --webhook-url <url>
+mmb agent-setup --webhook-id <id> [--wait-delivery <duration>] [--mark-test-done]
+
 # Agent setup resources
 mmb skill get monstermailbox
 
@@ -257,6 +280,14 @@ synthetic inbox `Message`, emits a normal `inbox.new` webhook payload with
 `data.test=true`, and returns JSON with `message_id`, `event_id`,
 `webhook_delivery_expected`, and next-step hints such as
 `mmb msg get <message_id> --peek`.
+
+`mmb agent-setup` runs both pieces together: it can create or verify an
+`inbox.new` webhook, fire `mmb webhook test` semantics, create the real
+synthetic inbox test email, fetch the resulting message with `peek=true`, and
+optionally claim/mark only that test message done with `--mark-test-done`.
+Final `pass` requires confirmed synthetic webhook delivery/signing and a
+successful real test-message fetch; set `--wait-delivery 0s` only when you want
+a partial `pending` report instead of waiting.
 
 Outbound attachment flags read local files and send them to the API as safe
 attachment objects: basename filename, detected content type, size, and base64

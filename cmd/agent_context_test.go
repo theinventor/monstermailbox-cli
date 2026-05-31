@@ -50,7 +50,7 @@ func TestAgentContext_EnumeratesEveryTopLevelCommand(t *testing.T) {
 		t.Fatalf("commands MUST be a map; got %T", ctx["commands"])
 	}
 	want := []string{
-		"agent-context", "skill", "auth", "whoami", "register", "update",
+		"agent-context", "agent-setup", "skill", "auth", "whoami", "register", "update",
 		"inbox", "msg", "test-email", "expect", "whitelist", "send",
 		// Outbound surface: reply-all primary, narrow secondary,
 		// new-email tertiary. The pre-v0.7 reply-to-email alias is
@@ -62,6 +62,31 @@ func TestAgentContext_EnumeratesEveryTopLevelCommand(t *testing.T) {
 	for _, name := range want {
 		if _, present := commands[name]; !present {
 			t.Errorf("commands MUST include %q (full set: %v)", name, keysOf(commands))
+		}
+	}
+}
+
+func TestAgentContext_AgentSetupDocumentsGuidedLoop(t *testing.T) {
+	ctx := runAgentContext(t)
+	commands := ctx["commands"].(map[string]any)
+	setup := commands["agent-setup"].(map[string]any)
+	flags := setup["flags"].(map[string]any)
+
+	for _, name := range []string{
+		"--address", "--email", "--save-profile", "--storage",
+		"--webhook-id", "--webhook-url", "--webhook-name", "--event-preset",
+		"--header", "--auth-bearer", "--wait-delivery",
+		"--skip-webhook-test", "--skip-test-email", "--mark-test-done",
+		"--idempotency-key", "--dry-run", "--strict",
+	} {
+		if _, has := flags[name]; !has {
+			t.Errorf("agent-setup agent-context MUST expose %s; flags=%v", name, keysOf(flags))
+		}
+	}
+	desc := setup["description"].(string)
+	for _, want := range []string{"claim/adoption", "webhook", "test message", "pass/fail"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("agent-setup description MUST mention %q; got %q", want, desc)
 		}
 	}
 }

@@ -1,0 +1,659 @@
+package cmd
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/theinventor/monstermailbox-cli/internal/client"
+)
+
+type agentSetupCapturedRequest struct {
+	Method         string
+	Path           string
+	RawQuery       string
+	AuthHeader     string
+	ContentType    string
+	IdempotencyKey string
+	Body           []byte
+}
+
+func runAgentSetupScenario(t *testing.T, argv []string, apiKey string, handler http.HandlerFunc) (string, []agentSetupCapturedRequest, error) {
+	t.Helper()
+
+	var requests []agentSetupCapturedRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		requests = append(requests, agentSetupCapturedRequest{
+			Method:         r.Method,
+			Path:           r.URL.Path,
+			RawQuery:       r.URL.RawQuery,
+			AuthHeader:     r.Header.Get("Authorization"),
+			ContentType:    r.Header.Get("Content-Type"),
+			IdempotencyKey: r.Header.Get("Idempotency-Key"),
+			Body:           body,
+		})
+		handler(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	t.Setenv(client.EnvAPIURL, srv.URL)
+	t.Setenv(client.EnvAPIKey, apiKey)
+	t.Setenv("MMB_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+
+	root := NewRootCmd()
+	out := &bytes.Buffer{}
+	root.SetOut(out)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs(argv)
+	err := root.Execute()
+	return out.String(), requests, err
+}
+
+func decodeAgentSetupReport(t *testing.T, stdout string) setupReport {
+	t.Helper()
+	var report setupReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("agent-setup stdout MUST be JSON; err=%v stdout=%s", err, stdout)
+	}
+	return report
+}
+
+func TestAgentSetupNoAuthEmitsActionableJSON(t *testing.T) {
+	stdout, requests, err := runAgentSetupScenario(t, []string{"agent-setup"}, "", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/version" {
+			t.Fatalf("no-auth setup should only hit GET /version; got %s %s", r.Method, r.URL.String())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"version":"test"}`)
+	})
+	if err != nil {
+		t.Fatalf("agent-setup without auth should emit needs_input JSON, not error: %v", err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("expected only GET /version; got %d requests: %+v", len(requests), requests)
+	}
+	report := decodeAgentSetupReport(t, stdout)
+	if report.Status != setupStatusNeedsInput || report.OK {
+		t.Fatalf("status = %s ok=%v; want needs_input false", report.Status, report.OK)
+	}
+	if got := report.Stages["profile_auth"].Status; got != setupStatusNeedsInput {
+		t.Fatalf("profile_auth status = %s; want needs_input", got)
+	}
+	if got := report.Stages["human_claim"].Status; got != setupStatusNeedsInput {
+		t.Fatalf("human_claim status = %s; want needs_input", got)
+	}
+	if !strings.Contains(stdout, "mmb auth login --address <local_part> --email <human_owner_email>") {
+		t.Errorf("missing auth login next step: %s", stdout)
+	}
+	if !strings.Contains(stdout, "mmb auth save --profile <profile>") {
+		t.Errorf("missing auth save next step: %s", stdout)
+	}
+}
+
+func TestAgentSetupNextStepCommandsUsePosixShellQuoting(t *testing.T) {
+	address := "setup;$(touch /tmp/pwn)&'agent"
+	email := "owner.o'hara+cash$@garryslist.org"
+	profile := "setup profile;$(id)"
+	stdout, _, err := runAgentSetupScenario(t,
+		[]string{"agent-setup", "--address", address, "--email", email, "--save-profile", profile},
+		"",
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet || r.URL.Path != "/version" {
+				t.Fatalf("no-auth setup should only hit GET /version; got %s %s", r.Method, r.URL.String())
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"version":"test"}`)
+		})
+	if err != nil {
+		t.Fatalf("quoted no-auth setup should emit needs_input JSON, not error: %v", err)
+	}
+	report := decodeAgentSetupReport(t, stdout)
+	commands := agentSetupNextStepCommands(report)
+	for _, want := range []string{
+		"--address 'setup;$(touch /tmp/pwn)&'\"'\"'agent'",
+		"--email 'owner.o'\"'\"'hara+cash$@garryslist.org'",
+		"--profile 'setup profile;$(id)'",
+	} {
+		if !strings.Contains(commands, want) {
+			t.Fatalf("next-step commands missing safely quoted %q:\n%s", want, commands)
+		}
+	}
+
+	url := "https://receiver.example.com/mmb?next=$(touch /tmp/pwn)&x=';|"
+	header := "X-Setup: abc; $(touch /tmp/pwn)&'quoted"
+	bearer := "bearer;$(id)&'token"
+	stdout, _, err = runAgentSetupScenario(t,
+		[]string{
+			"agent-setup",
+			"--webhook-url", url,
+			"--header", header,
+			"--auth-bearer", bearer,
+			"--skip-test-email",
+		},
+		"mmb_testkey1234567890",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/version":
+				_, _ = io.WriteString(w, `{"version":"test"}`)
+			case "/webhooks":
+				if r.Method == http.MethodGet {
+					_, _ = io.WriteString(w, `{"webhooks":[]}`)
+					return
+				}
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = io.WriteString(w, `{"error":"validation_failed"}`)
+			default:
+				t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+			}
+		})
+	if err != nil {
+		t.Fatalf("webhook create failure should emit fail JSON, not error: %v", err)
+	}
+	report = decodeAgentSetupReport(t, stdout)
+	commands = agentSetupNextStepCommands(report)
+	for _, want := range []string{
+		"--url " + shellArg(url),
+		"--header " + shellArg(header),
+		"--auth-bearer " + shellArg(bearer),
+	} {
+		if !strings.Contains(commands, want) {
+			t.Fatalf("webhook recovery commands missing safely quoted %q:\n%s", want, commands)
+		}
+	}
+}
+
+func TestAgentSetupMapsPendingAdoptionToHumanClaim(t *testing.T) {
+	stdout, _, err := runAgentSetupScenario(t, []string{"agent-setup", "--webhook-id", "42"}, "mmb_testkey1234567890", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			_, _ = io.WriteString(w, `{"version":"test"}`)
+		case "/webhooks":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"error":"agent_pending_adoption","reason":"owner_unclaimed","message":"human owner must claim and adopt this agent"}`)
+		default:
+			t.Fatalf("unexpected request after pending adoption: %s %s", r.Method, r.URL.String())
+		}
+	})
+	if err != nil {
+		t.Fatalf("pending adoption should emit needs_input JSON, not error: %v", err)
+	}
+	if strings.Contains(stdout, "mmb_testkey1234567890") {
+		t.Fatalf("stdout leaked raw API key: %s", stdout)
+	}
+	report := decodeAgentSetupReport(t, stdout)
+	if got := report.Stages["profile_auth"].Status; got != setupStatusPass {
+		t.Fatalf("profile_auth status = %s; want pass", got)
+	}
+	human := report.Stages["human_claim"]
+	if human.Status != setupStatusNeedsInput || human.Code != "owner_unclaimed" {
+		t.Fatalf("human_claim = %+v; want needs_input owner_unclaimed", human)
+	}
+	if !strings.Contains(stdout, "claim/adoption email") {
+		t.Errorf("pending adoption output should explain human claim/adoption boundary: %s", stdout)
+	}
+}
+
+func TestAgentSetupExistingWebhookHappyPath(t *testing.T) {
+	stdout, requests, err := runAgentSetupScenario(t,
+		[]string{"agent-setup", "--webhook-id", "42", "--idempotency-key", "setup-1"},
+		"mmb_testkey1234567890",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/version":
+				_, _ = io.WriteString(w, `{"version":"test"}`)
+			case "/webhooks":
+				_, _ = io.WriteString(w, `{"webhooks":[{"id":"42"}]}`)
+			case "/webhooks/42":
+				_, _ = io.WriteString(w, `{"id":"42","active":true,"events":["inbox.new"],"url":"https://receiver.example.com/mmb"}`)
+			case "/webhooks/42/test_deliveries":
+				if r.Method != http.MethodPost {
+					t.Fatalf("webhook test method = %s; want POST", r.Method)
+				}
+				_, _ = io.WriteString(w, `{"ok":true,"webhook_id":"42","event_id":"whtest_1"}`)
+			case "/webhooks/42/deliveries":
+				if r.URL.Query().Get("limit") != "20" {
+					t.Fatalf("delivery poll must request limit=20; raw query=%q", r.URL.RawQuery)
+				}
+				_, _ = io.WriteString(w, `{"deliveries":[{"id":"del_1","event_id":"whtest_1","status":"succeeded"}]}`)
+			case "/test_emails":
+				if r.Method != http.MethodPost {
+					t.Fatalf("test email method = %s; want POST", r.Method)
+				}
+				_, _ = io.WriteString(w, `{"ok":true,"test":true,"message_id":"123","message_source":"test_email","event":"inbox.new","event_id":"msg_123_test_email","data_test":true,"webhook_delivery_expected":true,"next_steps":["mmb msg get 123 --peek"]}`)
+			case "/msg/123":
+				if r.URL.Query().Get("peek") != "true" {
+					t.Fatalf("message fetch must use peek=true; raw query=%q", r.URL.RawQuery)
+				}
+				_, _ = io.WriteString(w, `{"id":"123","source":"test_email","state":"trusted","work_state":"inbox"}`)
+			default:
+				t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+			}
+		})
+	if err != nil {
+		t.Fatalf("happy path returned error: %v\nstdout=%s", err, stdout)
+	}
+	report := decodeAgentSetupReport(t, stdout)
+	if report.Status != setupStatusPass || !report.OK {
+		t.Fatalf("status = %s ok=%v; want pass true\nstdout=%s", report.Status, report.OK, stdout)
+	}
+	for _, stageName := range []string{"profile_auth", "human_claim", "webhook_config", "webhook_synthetic_test", "test_email_send", "message_fetch", "final_result"} {
+		if got := report.Stages[stageName].Status; got != setupStatusPass {
+			t.Fatalf("%s status = %s; want pass", stageName, got)
+		}
+	}
+	if requests[3].Path != "/webhooks/42/test_deliveries" || requests[3].IdempotencyKey != "setup-1-webhook-test" {
+		t.Fatalf("webhook test request/idempotency = %+v", requests[3])
+	}
+	if requests[4].Path != "/webhooks/42/deliveries" {
+		t.Fatalf("delivery poll request = %+v", requests[4])
+	}
+	if requests[5].Path != "/test_emails" || requests[5].IdempotencyKey != "setup-1-test-email" {
+		t.Fatalf("test email request/idempotency = %+v", requests[5])
+	}
+	if strings.TrimSpace(string(requests[5].Body)) != "" {
+		t.Fatalf("POST /test_emails should not send caller-controlled body; got %q", string(requests[5].Body))
+	}
+}
+
+func TestAgentSetupPollsWebhookDeliveryUntilTerminalStatus(t *testing.T) {
+	deliveryPolls := 0
+	stdout, _, err := runAgentSetupScenario(t,
+		[]string{"agent-setup", "--webhook-id", "42", "--wait-delivery", "100ms", "--skip-test-email"},
+		"mmb_testkey1234567890",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/version":
+				_, _ = io.WriteString(w, `{"version":"test"}`)
+			case "/webhooks":
+				_, _ = io.WriteString(w, `{"webhooks":[{"id":"42"}]}`)
+			case "/webhooks/42":
+				_, _ = io.WriteString(w, `{"id":"42","active":true,"events":["inbox.new"]}`)
+			case "/webhooks/42/test_deliveries":
+				_, _ = io.WriteString(w, `{"ok":true,"webhook_id":"42","event_id":"whtest_1"}`)
+			case "/webhooks/42/deliveries":
+				deliveryPolls++
+				if deliveryPolls == 1 {
+					_, _ = io.WriteString(w, `{"deliveries":[{"id":"del_1","event_id":"whtest_1","status":"pending"}]}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"deliveries":[{"id":"del_1","event_id":"whtest_1","status":"succeeded"}]}`)
+			default:
+				t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+			}
+		})
+	if err != nil {
+		t.Fatalf("eventual terminal delivery should emit JSON, not error: %v", err)
+	}
+	if deliveryPolls < 2 {
+		t.Fatalf("delivery polling stopped before terminal status; polls=%d", deliveryPolls)
+	}
+	report := decodeAgentSetupReport(t, stdout)
+	stage := report.Stages["webhook_synthetic_test"]
+	if stage.Status != setupStatusPass {
+		t.Fatalf("webhook_synthetic_test = %+v; want pass after pending then succeeded", stage)
+	}
+}
+
+func TestAgentSetupWebhookDeliveryFailureFails(t *testing.T) {
+	for _, deliveryStatus := range []string{"failed", "gave_up"} {
+		t.Run(deliveryStatus, func(t *testing.T) {
+			stdout, _, err := runAgentSetupScenario(t,
+				[]string{"agent-setup", "--webhook-id", "42", "--wait-delivery", "1ms", "--skip-test-email"},
+				"mmb_testkey1234567890",
+				func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					switch r.URL.Path {
+					case "/version":
+						_, _ = io.WriteString(w, `{"version":"test"}`)
+					case "/webhooks":
+						_, _ = io.WriteString(w, `{"webhooks":[{"id":"42"}]}`)
+					case "/webhooks/42":
+						_, _ = io.WriteString(w, `{"id":"42","active":true,"events":["inbox.new"]}`)
+					case "/webhooks/42/test_deliveries":
+						_, _ = io.WriteString(w, `{"ok":true,"webhook_id":"42","event_id":"whtest_1"}`)
+					case "/webhooks/42/deliveries":
+						_, _ = io.WriteString(w, `{"deliveries":[{"id":"del_1","event_id":"whtest_1","status":"`+deliveryStatus+`"}]}`)
+					default:
+						t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+					}
+				})
+			if err != nil {
+				t.Fatalf("non-strict webhook delivery failure should emit fail JSON, not error: %v", err)
+			}
+			report := decodeAgentSetupReport(t, stdout)
+			if report.Status != setupStatusFail || report.OK {
+				t.Fatalf("status = %s ok=%v; want fail false\nstdout=%s", report.Status, report.OK, stdout)
+			}
+			stage := report.Stages["webhook_synthetic_test"]
+			if stage.Status != setupStatusFail || stage.Code != "webhook_delivery_"+deliveryStatus {
+				t.Fatalf("webhook_synthetic_test = %+v; want terminal delivery failure", stage)
+			}
+		})
+	}
+}
+
+func TestAgentSetupWebhookDeliveryTimeoutIsPending(t *testing.T) {
+	stdout, _, err := runAgentSetupScenario(t,
+		[]string{"agent-setup", "--webhook-id", "42", "--wait-delivery", "1ms", "--skip-test-email"},
+		"mmb_testkey1234567890",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/version":
+				_, _ = io.WriteString(w, `{"version":"test"}`)
+			case "/webhooks":
+				_, _ = io.WriteString(w, `{"webhooks":[{"id":"42"}]}`)
+			case "/webhooks/42":
+				_, _ = io.WriteString(w, `{"id":"42","active":true,"events":["inbox.new"]}`)
+			case "/webhooks/42/test_deliveries":
+				_, _ = io.WriteString(w, `{"ok":true,"webhook_id":"42","event_id":"whtest_1"}`)
+			case "/webhooks/42/deliveries":
+				_, _ = io.WriteString(w, `{"deliveries":[]}`)
+			default:
+				t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+			}
+		})
+	if err != nil {
+		t.Fatalf("pending webhook delivery should emit pending JSON, not error: %v", err)
+	}
+	report := decodeAgentSetupReport(t, stdout)
+	if report.Status != setupStatusPending || report.OK {
+		t.Fatalf("status = %s ok=%v; want pending false\nstdout=%s", report.Status, report.OK, stdout)
+	}
+	stage := report.Stages["webhook_synthetic_test"]
+	if stage.Status != setupStatusPending || stage.Code != "webhook_delivery_pending" {
+		t.Fatalf("webhook_synthetic_test = %+v; want pending timeout", stage)
+	}
+}
+
+func TestAgentSetupExplicitNoWaitDoesNotPass(t *testing.T) {
+	stdout, _, err := runAgentSetupScenario(t,
+		[]string{"agent-setup", "--webhook-id", "42", "--wait-delivery", "0s", "--skip-test-email"},
+		"mmb_testkey1234567890",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/version":
+				_, _ = io.WriteString(w, `{"version":"test"}`)
+			case "/webhooks":
+				_, _ = io.WriteString(w, `{"webhooks":[{"id":"42"}]}`)
+			case "/webhooks/42":
+				_, _ = io.WriteString(w, `{"id":"42","active":true,"events":["inbox.new"]}`)
+			case "/webhooks/42/test_deliveries":
+				_, _ = io.WriteString(w, `{"ok":true,"webhook_id":"42","event_id":"whtest_1"}`)
+			default:
+				t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+			}
+		})
+	if err != nil {
+		t.Fatalf("explicit no-wait setup should emit pending JSON, not error: %v", err)
+	}
+	report := decodeAgentSetupReport(t, stdout)
+	if report.Status != setupStatusPending || report.OK {
+		t.Fatalf("status = %s ok=%v; want pending false\nstdout=%s", report.Status, report.OK, stdout)
+	}
+	stage := report.Stages["webhook_synthetic_test"]
+	if stage.Status != setupStatusPending || stage.Code != "webhook_delivery_not_confirmed" {
+		t.Fatalf("webhook_synthetic_test = %+v; want unconfirmed delivery pending", stage)
+	}
+}
+
+func TestAgentSetupSkippedEssentialStageDoesNotPass(t *testing.T) {
+	stdout, _, err := runAgentSetupScenario(t,
+		[]string{"agent-setup", "--webhook-id", "42", "--skip-webhook-test"},
+		"mmb_testkey1234567890",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/version":
+				_, _ = io.WriteString(w, `{"version":"test"}`)
+			case "/webhooks":
+				_, _ = io.WriteString(w, `{"webhooks":[{"id":"42"}]}`)
+			case "/webhooks/42":
+				_, _ = io.WriteString(w, `{"id":"42","active":true,"events":["inbox.new"]}`)
+			case "/test_emails":
+				_, _ = io.WriteString(w, `{"ok":true,"test":true,"message_id":"123","message_source":"test_email","event_id":"msg_123_test_email","webhook_delivery_expected":true}`)
+			case "/msg/123":
+				_, _ = io.WriteString(w, `{"id":"123","source":"test_email","state":"trusted","work_state":"inbox"}`)
+			default:
+				t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+			}
+		})
+	if err != nil {
+		t.Fatalf("skipped essential stage should emit pending JSON, not error: %v", err)
+	}
+	report := decodeAgentSetupReport(t, stdout)
+	if report.Status != setupStatusPending || report.OK {
+		t.Fatalf("status = %s ok=%v; want pending false\nstdout=%s", report.Status, report.OK, stdout)
+	}
+	if got := report.Stages["webhook_synthetic_test"].Status; got != setupStatusSkipped {
+		t.Fatalf("webhook_synthetic_test status = %s; want skipped", got)
+	}
+	finalDetails := report.Stages["final_result"].Details
+	if !containsStringAny(finalDetails["skipped_essential_stages"], "webhook_synthetic_test") {
+		t.Fatalf("final_result skipped_essential_stages = %v; want webhook_synthetic_test", finalDetails["skipped_essential_stages"])
+	}
+}
+
+func TestAgentSetupWebhookCreatePostsRecommendedPayload(t *testing.T) {
+	var createBody map[string]any
+	stdout, _, err := runAgentSetupScenario(t,
+		[]string{
+			"agent-setup",
+			"--webhook-url", "https://receiver.example.com/mmb",
+			"--webhook-name", "setup receiver",
+			"--event-preset", "quarantine-aware-inbox",
+			"--header", "x-openclaw-token: fake-api-token",
+			"--auth-bearer", "fake-bearer",
+		},
+		"mmb_testkey1234567890",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/version":
+				_, _ = io.WriteString(w, `{"version":"test"}`)
+			case "/webhooks":
+				if r.Method == http.MethodGet {
+					_, _ = io.WriteString(w, `{"webhooks":[]}`)
+					return
+				}
+				createBody = decodeBody(t, mustReadBody(t, r))
+				w.WriteHeader(http.StatusCreated)
+				_, _ = io.WriteString(w, `{"id":"77","active":true,"events":["inbox.new","inbox.quarantined","inbox.released"],"secret":"whsec_fake_once"}`)
+			case "/webhooks/77/test_deliveries":
+				_, _ = io.WriteString(w, `{"ok":true,"webhook_id":"77","event_id":"whtest_77"}`)
+			case "/webhooks/77/deliveries":
+				_, _ = io.WriteString(w, `{"deliveries":[{"id":"del_77","event_id":"whtest_77","status":"succeeded"}]}`)
+			case "/test_emails":
+				w.WriteHeader(http.StatusCreated)
+				_, _ = io.WriteString(w, `{"ok":true,"test":true,"message_id":"123","message_source":"test_email","event_id":"msg_123_test_email","webhook_delivery_expected":true}`)
+			case "/msg/123":
+				_, _ = io.WriteString(w, `{"id":"123","source":"test_email","state":"trusted","work_state":"inbox"}`)
+			default:
+				t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+			}
+		})
+	if err != nil {
+		t.Fatalf("webhook create setup returned error: %v\nstdout=%s", err, stdout)
+	}
+	if createBody["name"] != "setup receiver" || createBody["url"] != "https://receiver.example.com/mmb" {
+		t.Fatalf("bad webhook create body: %v", createBody)
+	}
+	assertBodyEvents(t, mustMarshalBody(t, createBody), []string{"inbox.new", "inbox.quarantined", "inbox.released"})
+	headers := createBody["headers"].(map[string]any)
+	if headers["Authorization"] != "Bearer fake-bearer" || headers["x-openclaw-token"] != "fake-api-token" {
+		t.Fatalf("delivery headers missing from create body: %v", headers)
+	}
+	report := decodeAgentSetupReport(t, stdout)
+	if report.Status != setupStatusPass {
+		t.Fatalf("status = %s; want pass\nstdout=%s", report.Status, stdout)
+	}
+	if _, ok := report.Artifacts["webhook_secret"]; !ok {
+		t.Fatalf("webhook create should surface one-time secret artifact with sensitivity metadata")
+	}
+}
+
+func TestAgentSetupMissingTestEmailCapabilityFailsActionably(t *testing.T) {
+	stdout, _, err := runAgentSetupScenario(t,
+		[]string{"agent-setup", "--webhook-id", "42"},
+		"mmb_testkey1234567890",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/version":
+				_, _ = io.WriteString(w, `{"version":"test"}`)
+			case "/webhooks":
+				_, _ = io.WriteString(w, `{"webhooks":[{"id":"42"}]}`)
+			case "/webhooks/42":
+				_, _ = io.WriteString(w, `{"id":"42","active":true,"events":["inbox.new"]}`)
+			case "/webhooks/42/test_deliveries":
+				_, _ = io.WriteString(w, `{"ok":true,"webhook_id":"42","event_id":"whtest_1"}`)
+			case "/webhooks/42/deliveries":
+				_, _ = io.WriteString(w, `{"deliveries":[{"id":"del_1","event_id":"whtest_1","status":"succeeded"}]}`)
+			case "/test_emails":
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, `{"error":"not_found"}`)
+			default:
+				t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+			}
+		})
+	if err != nil {
+		t.Fatalf("non-strict missing backend capability should emit fail JSON, not error: %v", err)
+	}
+	report := decodeAgentSetupReport(t, stdout)
+	if report.Status != setupStatusFail {
+		t.Fatalf("status = %s; want fail", report.Status)
+	}
+	stage := report.Stages["test_email_send"]
+	if stage.Status != setupStatusFail || stage.Code != "missing_backend_capability" {
+		t.Fatalf("test_email_send = %+v; want missing_backend_capability fail", stage)
+	}
+	if !strings.Contains(stdout, "mmb update") {
+		t.Fatalf("missing backend capability should include update/deploy next step: %s", stdout)
+	}
+}
+
+func TestAgentSetupDryRunWithoutWebhookDoesNotPlanTestEmail(t *testing.T) {
+	stdout, requests, err := runAgentSetupScenario(t,
+		[]string{"agent-setup", "--dry-run", "--mark-test-done"},
+		"mmb_testkey1234567890",
+		func(w http.ResponseWriter, r *http.Request) {
+			t.Fatalf("dry-run must not make HTTP requests; got %s %s", r.Method, r.URL.String())
+		})
+	if err != nil {
+		t.Fatalf("dry-run without webhook should not error: %v", err)
+	}
+	if len(requests) != 0 {
+		t.Fatalf("dry-run made HTTP requests: %+v", requests)
+	}
+	report := decodeAgentSetupReport(t, stdout)
+	if got := report.Stages["webhook_config"].Status; got != setupStatusNeedsInput {
+		t.Fatalf("webhook_config status = %s; want needs_input", got)
+	}
+	if stage := report.Stages["test_email_send"]; stage.Status != setupStatusSkipped || stage.Code != "webhook_not_ready" {
+		t.Fatalf("test_email_send = %+v; want skipped webhook_not_ready", stage)
+	}
+	planned, ok := report.Artifacts["planned_requests"].([]any)
+	if !ok {
+		t.Fatalf("planned_requests missing: %v", report.Artifacts["planned_requests"])
+	}
+	for _, raw := range planned {
+		req, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("bad planned request entry: %v", raw)
+		}
+		if req["path"] == "/test_emails" {
+			t.Fatalf("dry-run without webhook must not plan /test_emails: %s", stdout)
+		}
+	}
+	if strings.Contains(stdout, "/test_emails") {
+		t.Fatalf("dry-run without webhook should not mention /test_emails mutation:\n%s", stdout)
+	}
+}
+
+func TestAgentSetupDryRunPrintsPlannedMutationsWithoutHTTP(t *testing.T) {
+	stdout, requests, err := runAgentSetupScenario(t,
+		[]string{"agent-setup", "--dry-run", "--webhook-id", "42", "--idempotency-key", "setup-1", "--mark-test-done"},
+		"mmb_testkey1234567890",
+		func(w http.ResponseWriter, r *http.Request) {
+			t.Fatalf("dry-run must not make HTTP requests; got %s %s", r.Method, r.URL.String())
+		})
+	if err != nil {
+		t.Fatalf("dry-run should not error: %v", err)
+	}
+	if len(requests) != 0 {
+		t.Fatalf("dry-run made HTTP requests: %+v", requests)
+	}
+	report := decodeAgentSetupReport(t, stdout)
+	if report.Status != setupStatusDryRun {
+		t.Fatalf("status = %s; want dry_run", report.Status)
+	}
+	planned, ok := report.Artifacts["planned_requests"].([]any)
+	if !ok || len(planned) < 4 {
+		t.Fatalf("planned_requests missing or too short: %v", report.Artifacts["planned_requests"])
+	}
+	for _, want := range []string{
+		"/webhooks/42/test_deliveries",
+		"/test_emails",
+		"/msg/{message_id_from_test_email}/work_state",
+		"setup-1-test-email",
+		"setup-1-test-message-done",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("dry-run output missing %q: %s", want, stdout)
+		}
+	}
+}
+
+func mustReadBody(t *testing.T, r *http.Request) []byte {
+	t.Helper()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func mustMarshalBody(t *testing.T, body map[string]any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func containsStringAny(raw any, want string) bool {
+	values, ok := raw.([]any)
+	if !ok {
+		return false
+	}
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func agentSetupNextStepCommands(report setupReport) string {
+	commands := []string{}
+	for _, step := range report.NextSteps {
+		if step.Command != "" {
+			commands = append(commands, step.Command)
+		}
+	}
+	return strings.Join(commands, "\n")
+}

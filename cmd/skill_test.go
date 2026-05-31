@@ -24,6 +24,8 @@ func TestSkillGet_PrintsMonsterMailboxSample(t *testing.T) {
 	for _, want := range []string{
 		"mmb auth login --address <local_part> --email <human_owner_email>",
 		"mmb auth save --profile <profile>",
+		"mmb agent-setup --address <local_part> --email <human_owner_email> --webhook-url <receiver_url>",
+		"mmb agent-setup --webhook-id <webhook_id>",
 		"mmb agent-context",
 		"mmb skill get monstermailbox",
 		"mmb inbox list --work-state inbox",
@@ -122,6 +124,8 @@ func TestReadmeDocumentsCanonicalAgentSetup(t *testing.T) {
 		"## Agent-guided first setup",
 		"mmb auth login --address <local_part> --email <human_owner_email>",
 		"mmb auth save",
+		"mmb agent-setup --address <local> --email <owner> --webhook-url <url>",
+		"mmb agent-setup --webhook-id <id>",
 		"mmb agent-context",
 		"mmb skill get monstermailbox",
 		"mmb msg get        <id> [--peek]",

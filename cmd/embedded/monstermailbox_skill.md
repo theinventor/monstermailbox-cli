@@ -46,14 +46,24 @@ canonical setup path rather than only listing raw commands:
    If you do not have permission to run shell commands, ask the human to run it.
 4. Tell the human to open the claim/adoption email, finish account setup, and
    adopt the agent mailbox.
-5. After adoption, run `mmb whoami` and `mmb agent-context` before expecting
+5. Run the deterministic guided setup loop when webhook verification or a real
+   inbox workflow test is needed:
+   `mmb agent-setup --address <local_part> --email <human_owner_email> --webhook-url <receiver_url>`.
+   If the human has already configured a receiver, use
+   `mmb agent-setup --webhook-id <webhook_id>` instead.
+6. After adoption, run `mmb whoami` and `mmb agent-context` before expecting
    inbox work, outbound mail, webhooks, or work-state updates to function.
-6. Install this bundled skill with `mmb skill get monstermailbox`, then replace
+7. Install this bundled skill with `mmb skill get monstermailbox`, then replace
    `HUMAN_OWNER_NAME` before relying on owner-specific routing rules.
 
 If an API key already exists, use `mmb auth save --profile <profile> --api-key
 <api_key> --api-url https://api.monstermailbox.com --agent-address
 <agent@monstermailbox.com>` instead of creating a new mailbox.
+
+`mmb agent-setup` prints one JSON report and does not prompt. Treat
+`needs_input` stages as instructions for what the human must provide or approve;
+do not claim that you completed the owner claim/adoption email unless the human
+actually did it.
 
 ## Common commands
 
@@ -61,6 +71,13 @@ If an API key already exists, use `mmb auth save --profile <profile> --api-key
   governed agent mailbox, save the returned key, and send the claim/adoption
   email to the human owner.
 - mmb auth save --profile PROFILE --api-key KEY --api-url URL --agent-address ADDRESS — persist an existing key without printing it in chat or logs.
+- mmb agent-setup --address LOCAL --email OWNER --webhook-url URL — run the
+  deterministic setup loop from auth/profile preflight through webhook and real
+  inbox test-email verification; final `pass` requires confirmed synthetic
+  webhook delivery/signing and a successful real test-message fetch.
+- mmb agent-setup --webhook-id WEBHOOK_ID --wait-delivery 15s --mark-test-done — verify an existing webhook, create/fetch a real test message, and optionally
+  mark only that synthetic test message done. The default wait is 15 seconds;
+  use `--wait-delivery 0s` only when a partial `pending` report is acceptable.
 - mmb whoami — confirm the loaded identity, API target, and server status.
 - mmb agent-context — inspect the machine-readable command, flag, enum, profile,
   and sample-skill surface before scripting.
@@ -88,6 +105,12 @@ If an API key already exists, use `mmb auth save --profile <profile> --api-key
 - Root --profile works with authenticated commands and wins over MONSTERMAILBOX_API_KEY for that invocation; omit it to use env credentials first, then the config default profile.
 - Prefer mmb new-email for new threads and mmb reply-all for replies.
 - If the CLI can do it, use the CLI; do not reach for raw HTTP.
+- Prefer `mmb agent-setup` for first-run setup verification. It reports
+  machine-readable stages for version/profile/auth, human claim/adoption,
+  skill availability, webhook config, synthetic webhook test, real test email,
+  message fetch, optional work-state handling, and final pass/fail output.
+  Final `pass` requires confirmed webhook delivery/signing; skipped or
+  unconfirmed essential checks stay non-pass.
 - Use webhook event presets rather than hand-assembling event lists unless the
   receiver truly needs custom observability.
 - For whitelist changes, prefer exact sender addresses over domain or regex rules. Use `whitelist create`, not the hidden deprecated `whitelist add` alias.
