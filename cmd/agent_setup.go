@@ -568,7 +568,7 @@ func runAgentSetupWebhookConfig(report *setupReport, cli *client.Client, f agent
 				Message: "The configured webhook is inactive.",
 				Details: map[string]any{"webhook": redactedWebhookDetails(resp.Body)},
 				NextSteps: []setupNextStep{{
-					Command:     "mmb webhook update " + f.WebhookID + " --active=true",
+					Command:     "mmb webhook update " + shellArg(f.WebhookID) + " --active=true",
 					Description: "Re-enable the webhook, then rerun mmb agent-setup.",
 				}},
 			})
@@ -581,7 +581,7 @@ func runAgentSetupWebhookConfig(report *setupReport, cli *client.Client, f agent
 				Message: "The configured webhook is not subscribed to inbox.new.",
 				Details: map[string]any{"webhook": redactedWebhookDetails(resp.Body)},
 				NextSteps: []setupNextStep{{
-					Command:     "mmb webhook update " + f.WebhookID + " --event-preset trusted-inbox",
+					Command:     "mmb webhook update " + shellArg(f.WebhookID) + " --event-preset trusted-inbox",
 					Description: "Subscribe the webhook to the trusted inbox event, then rerun mmb agent-setup.",
 				}},
 			})
@@ -632,7 +632,7 @@ func runAgentSetupWebhookConfig(report *setupReport, cli *client.Client, f agent
 	}
 	if resp.StatusCode >= 400 {
 		stage := apiFailureStage("Could not create the setup webhook.", resp, []setupNextStep{{
-			Command:     "mmb webhook create --name " + shellArg(f.WebhookName) + " --url " + shellArg(f.WebhookURL) + " --event-preset " + shellArg(f.EventPreset),
+			Command:     agentSetupWebhookCreateCommand(f),
 			Description: "Create or debug the webhook directly, then rerun mmb agent-setup with --webhook-id.",
 		}})
 		stage.Details["request"] = setupPlannedRequest{
@@ -715,7 +715,7 @@ func runAgentSetupWebhookTest(report *setupReport, cli *client.Client, webhookID
 		Message: "Synthetic webhook test was accepted.",
 		Details: details,
 		NextSteps: []setupNextStep{{
-			Command:     "mmb webhook deliveries " + webhookID + " --limit 20",
+			Command:     "mmb webhook deliveries " + shellArg(webhookID) + " --limit 20",
 			Description: "Check recent deliveries if the receiver did not observe the synthetic webhook.",
 		}},
 	}
@@ -731,7 +731,7 @@ func runAgentSetupWebhookTest(report *setupReport, cli *client.Client, webhookID
 		stage.Code = "webhook_delivery_not_confirmed"
 		stage.Message = "Synthetic webhook test was accepted, but delivery confirmation was skipped by --wait-delivery=0s."
 		stage.NextSteps = append(stage.NextSteps, setupNextStep{
-			Command:     "mmb agent-setup --webhook-id " + webhookID + " --wait-delivery 15s",
+			Command:     "mmb agent-setup --webhook-id " + shellArg(webhookID) + " --wait-delivery 15s",
 			Description: "Rerun setup with bounded delivery polling so final pass proves the receiver accepted the signed webhook.",
 		})
 	} else {
@@ -802,7 +802,7 @@ func runAgentSetupTestEmail(report *setupReport, cli *client.Client, f agentSetu
 		report.Artifacts["webhook_receipt_hint"] = "wait for webhook event inbox.new with event_id=" + eventID + " and data.test=true"
 	}
 	nextSteps := []setupNextStep{{
-		Command:     "mmb msg get " + messageID + " --peek",
+		Command:     "mmb msg get " + shellArg(messageID) + " --peek",
 		Description: "Fetch the synthetic test message without marking it read.",
 	}}
 	if eventID != "" {
@@ -811,7 +811,7 @@ func runAgentSetupTestEmail(report *setupReport, cli *client.Client, f agentSetu
 		})
 		if webhookID != "" {
 			nextSteps = append(nextSteps, setupNextStep{
-				Command:     "mmb webhook deliveries " + webhookID + " --limit 20",
+				Command:     "mmb webhook deliveries " + shellArg(webhookID) + " --limit 20",
 				Description: "Inspect recent deliveries if the receiver did not observe the real inbox test email webhook.",
 			})
 		}
@@ -850,7 +850,7 @@ func runAgentSetupMessageFetch(report *setupReport, cli *client.Client, messageI
 	}
 	if resp.StatusCode >= 400 {
 		report.setStage("message_fetch", apiFailureStage("Could not fetch the synthetic test message.", resp, []setupNextStep{{
-			Command:     "mmb msg get " + messageID + " --peek",
+			Command:     "mmb msg get " + shellArg(messageID) + " --peek",
 			Description: "Retry fetching the synthetic test message.",
 		}}))
 		return false
@@ -989,6 +989,7 @@ func runAgentSetupDryRun(report *setupReport, f agentSetupFlags) {
 	})
 
 	planned := []setupPlannedRequest{}
+	webhookMayBeReady := false
 	if f.WebhookURL != "" {
 		wf := webhookMutationFlags{
 			Name:        f.WebhookName,
@@ -1019,6 +1020,7 @@ func runAgentSetupDryRun(report *setupReport, f agentSetupFlags) {
 				Message: "Would create a setup webhook with the recommended event preset.",
 				Details: map[string]any{"request": planned[len(planned)-1]},
 			})
+			webhookMayBeReady = true
 		}
 	} else if f.WebhookID != "" {
 		report.setStage("webhook_config", setupStage{
@@ -1030,6 +1032,7 @@ func runAgentSetupDryRun(report *setupReport, f agentSetupFlags) {
 				Reason: "verify existing webhook",
 			}},
 		})
+		webhookMayBeReady = true
 	} else {
 		report.setStage("webhook_config", setupStage{
 			Status:  setupStatusNeedsInput,
@@ -1084,7 +1087,11 @@ func runAgentSetupDryRun(report *setupReport, f agentSetupFlags) {
 			Status:  setupStatusSkipped,
 			Message: "Message fetch skipped because --skip-test-email is set.",
 		})
-	} else {
+		report.setStage("test_message_work_state", setupStage{
+			Status:  setupStatusSkipped,
+			Message: "Work-state handling skipped because --skip-test-email is set.",
+		})
+	} else if webhookMayBeReady || f.SkipWebhookTest {
 		headers := setupIdempotencyHeaders(f, "test-email")
 		req := setupPlannedRequest{
 			Method:         http.MethodPost,
@@ -1108,6 +1115,27 @@ func runAgentSetupDryRun(report *setupReport, f agentSetupFlags) {
 				Reason: "fetch synthetic test message without marking read",
 			}},
 		})
+	} else {
+		report.setStage("test_email_send", setupStage{
+			Status:  setupStatusSkipped,
+			Code:    "webhook_not_ready",
+			Message: "Would not create a real inbox test email until webhook setup is ready, matching live execution.",
+		})
+		report.setStage("message_fetch", setupStage{
+			Status:  setupStatusSkipped,
+			Code:    "test_email_not_created",
+			Message: "Would not fetch a test message because dry-run has no planned test_email_send mutation.",
+		})
+		report.setStage("test_message_work_state", setupStage{
+			Status:  setupStatusSkipped,
+			Code:    "test_email_not_created",
+			Message: "Would not mutate work-state because dry-run has no planned test message.",
+		})
+	}
+
+	if _, exists := report.Stages["test_message_work_state"]; exists {
+		report.Artifacts["planned_requests"] = planned
+		return
 	}
 
 	if f.MarkTestDone {
@@ -1299,6 +1327,8 @@ func pollWebhookDelivery(cli *client.Client, webhookID, eventID string, wait tim
 	q := url.Values{}
 	q.Set("limit", "20")
 	var lastErr string
+	var lastStatus string
+	var lastDelivery map[string]any
 	polls := 0
 	for {
 		polls++
@@ -1309,20 +1339,41 @@ func pollWebhookDelivery(cli *client.Client, webhookID, eventID string, wait tim
 			lastErr = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		} else if delivery, ok := findDeliveryByEventID(resp.Body, eventID); ok {
 			status := stringField(delivery, "status")
-			return status, map[string]any{
-				"polls":    polls,
-				"event_id": eventID,
-				"delivery": delivery,
+			lastErr = ""
+			lastStatus = status
+			lastDelivery = delivery
+			if terminalWebhookDeliveryStatus(status) {
+				return status, map[string]any{
+					"polls":    polls,
+					"event_id": eventID,
+					"delivery": delivery,
+				}
 			}
 		}
 		if time.Now().After(deadline) {
-			return setupStatusPending, map[string]any{
+			details := map[string]any{
 				"polls":      polls,
 				"event_id":   eventID,
 				"last_error": nilIfEmpty(lastErr),
 			}
+			if lastStatus != "" {
+				details["last_status"] = lastStatus
+			}
+			if lastDelivery != nil {
+				details["delivery"] = lastDelivery
+			}
+			return setupStatusPending, details
 		}
 		time.Sleep(minDuration(500*time.Millisecond, time.Until(deadline)))
+	}
+}
+
+func terminalWebhookDeliveryStatus(status string) bool {
+	switch status {
+	case "succeeded", "failed", "gave_up":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1366,6 +1417,22 @@ func authSetupNextSteps(f agentSetupFlags) []setupNextStep {
 		Command:     save,
 		Description: "If an API key already exists, save it as a local profile instead of creating a new mailbox.",
 	}}
+}
+
+func agentSetupWebhookCreateCommand(f agentSetupFlags) string {
+	parts := []string{
+		"mmb", "webhook", "create",
+		"--name", shellArg(f.WebhookName),
+		"--url", shellArg(f.WebhookURL),
+		"--event-preset", shellArg(f.EventPreset),
+	}
+	for _, header := range f.Headers {
+		parts = append(parts, "--header", shellArg(header))
+	}
+	if f.AuthBearer != "" {
+		parts = append(parts, "--auth-bearer", shellArg(f.AuthBearer))
+	}
+	return strings.Join(parts, " ")
 }
 
 func setupIdempotencyHeaders(f agentSetupFlags, suffix string) map[string]string {
@@ -1470,17 +1537,22 @@ func placeholderOr(value, placeholder string) string {
 }
 
 func shellArg(s string) string {
-	if strings.HasPrefix(s, "<") && strings.HasSuffix(s, ">") {
+	if shellPlaceholder(s) {
 		return s
 	}
 	if s == "" {
-		return `""`
+		return "''"
 	}
-	if strings.ContainsAny(s, " \t\n\"'\\$`") {
-		b, _ := json.Marshal(s)
-		return string(b)
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func shellPlaceholder(s string) bool {
+	switch s {
+	case "<local_part>", "<human_owner_email>", "<profile>", "<webhook_id>":
+		return true
+	default:
+		return false
 	}
-	return s
 }
 
 func mergeStage(base, overlay setupStage) setupStage {
