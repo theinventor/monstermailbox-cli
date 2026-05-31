@@ -73,9 +73,11 @@ actually did it.
 - mmb auth save --profile PROFILE --api-key KEY --api-url URL --agent-address ADDRESS — persist an existing key without printing it in chat or logs.
 - mmb agent-setup --address LOCAL --email OWNER --webhook-url URL — run the
   deterministic setup loop from auth/profile preflight through webhook and real
-  inbox test-email verification.
+  inbox test-email verification; final `pass` requires confirmed synthetic
+  webhook delivery/signing and a successful real test-message fetch.
 - mmb agent-setup --webhook-id WEBHOOK_ID --wait-delivery 15s --mark-test-done — verify an existing webhook, create/fetch a real test message, and optionally
-  mark only that synthetic test message done.
+  mark only that synthetic test message done. The default wait is 15 seconds;
+  use `--wait-delivery 0s` only when a partial `pending` report is acceptable.
 - mmb whoami — confirm the loaded identity, API target, and server status.
 - mmb agent-context — inspect the machine-readable command, flag, enum, profile,
   and sample-skill surface before scripting.
@@ -107,6 +109,8 @@ actually did it.
   machine-readable stages for version/profile/auth, human claim/adoption,
   skill availability, webhook config, synthetic webhook test, real test email,
   message fetch, optional work-state handling, and final pass/fail output.
+  Final `pass` requires confirmed webhook delivery/signing; skipped or
+  unconfirmed essential checks stay non-pass.
 - Use webhook event presets rather than hand-assembling event lists unless the
   receiver truly needs custom observability.
 - For whitelist changes, prefer exact sender addresses over domain or regex rules. Use `whitelist create`, not the hidden deprecated `whitelist add` alias.

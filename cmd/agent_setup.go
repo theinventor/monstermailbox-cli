@@ -15,6 +15,8 @@ import (
 
 const AgentSetupSchemaVersion = "1"
 
+const defaultAgentSetupWaitDelivery = 15 * time.Second
+
 const (
 	setupStatusPass       = "pass"
 	setupStatusFail       = "fail"
@@ -115,7 +117,7 @@ commands for the human/agent pair instead of prompting.`,
 	c.Flags().StringVar(&f.EventPreset, "event-preset", "trusted-inbox", "named event set for a created webhook: trusted-inbox, quarantine-aware-inbox, full-inbound-lifecycle")
 	c.Flags().StringArrayVar(&f.Headers, "header", nil, "delivery header for a created webhook, as 'Name: value' (repeatable)")
 	c.Flags().StringVar(&f.AuthBearer, "auth-bearer", "", "set delivery Authorization: Bearer <token> on a created webhook")
-	c.Flags().DurationVar(&f.WaitDelivery, "wait-delivery", 0, "bounded time to poll webhook deliveries for the synthetic test event (0 = do not poll)")
+	c.Flags().DurationVar(&f.WaitDelivery, "wait-delivery", defaultAgentSetupWaitDelivery, "bounded time to poll webhook deliveries for the synthetic test event (0s = do not poll; final status stays pending)")
 	c.Flags().BoolVar(&f.SkipWebhookTest, "skip-webhook-test", false, "skip firing the synthetic webhook test")
 	c.Flags().BoolVar(&f.SkipTestEmail, "skip-test-email", false, "skip creating and fetching the real synthetic inbox test message")
 	c.Flags().BoolVar(&f.MarkTestDone, "mark-test-done", false, "after fetching the synthetic test message, claim and mark only that message done")
@@ -304,6 +306,7 @@ func (r *setupReport) addNextStep(step setupNextStep) {
 
 func (r *setupReport) finish(dryRun bool) {
 	status := setupStatusPass
+	skippedEssentialStages := []string{}
 	if dryRun {
 		status = setupStatusDryRun
 	}
@@ -322,6 +325,13 @@ func (r *setupReport) finish(dryRun bool) {
 			if status != setupStatusFail && status != setupStatusNeedsInput && !dryRun {
 				status = setupStatusPending
 			}
+		case setupStatusSkipped:
+			if essentialSetupStage(name) && !dryRun {
+				skippedEssentialStages = append(skippedEssentialStages, name)
+				if status == setupStatusPass {
+					status = setupStatusPending
+				}
+			}
 		}
 	}
 	r.Status = status
@@ -336,14 +346,27 @@ func (r *setupReport) finish(dryRun bool) {
 	} else if status == setupStatusFail {
 		message = "MonsterMailbox setup verification failed; see failing stages and next_steps."
 	}
+	details := map[string]any{
+		"ok": r.OK,
+	}
+	if len(skippedEssentialStages) > 0 {
+		details["skipped_essential_stages"] = skippedEssentialStages
+	}
 	r.setStage("final_result", setupStage{
-		Status:  status,
-		Message: message,
-		Details: map[string]any{
-			"ok": r.OK,
-		},
+		Status:    status,
+		Message:   message,
+		Details:   details,
 		NextSteps: r.NextSteps,
 	})
+}
+
+func essentialSetupStage(name string) bool {
+	switch name {
+	case "webhook_synthetic_test", "test_email_send", "message_fetch":
+		return true
+	default:
+		return false
+	}
 }
 
 func strictAgentSetupError(f agentSetupFlags, report *setupReport) error {
@@ -696,7 +719,22 @@ func runAgentSetupWebhookTest(report *setupReport, cli *client.Client, webhookID
 			Description: "Check recent deliveries if the receiver did not observe the synthetic webhook.",
 		}},
 	}
-	if f.WaitDelivery > 0 && eventID != "" {
+	if eventID == "" {
+		stage.Status = setupStatusFail
+		stage.Code = "webhook_test_missing_event_id"
+		stage.Message = "Synthetic webhook test was accepted but did not return an event_id for delivery verification."
+		report.setStage("webhook_synthetic_test", stage)
+		return
+	}
+	if f.WaitDelivery <= 0 {
+		stage.Status = setupStatusPending
+		stage.Code = "webhook_delivery_not_confirmed"
+		stage.Message = "Synthetic webhook test was accepted, but delivery confirmation was skipped by --wait-delivery=0s."
+		stage.NextSteps = append(stage.NextSteps, setupNextStep{
+			Command:     "mmb agent-setup --webhook-id " + webhookID + " --wait-delivery 15s",
+			Description: "Rerun setup with bounded delivery polling so final pass proves the receiver accepted the signed webhook.",
+		})
+	} else {
 		status, pollDetails := pollWebhookDelivery(cli, webhookID, eventID, f.WaitDelivery)
 		details["delivery_poll"] = pollDetails
 		switch status {
