@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/mail"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -51,14 +52,14 @@ func newExpectCmd() *cobra.Command {
 	c.Flags().StringVar(&subjectAlias, "subject", "", "deprecated alias for --subject-regex")
 	_ = c.Flags().MarkDeprecated("subject", "use --subject-regex instead")
 	c.Flags().StringVar(&purpose, "purpose", "verification", "short reason for the expectation")
-	c.Flags().StringVar(&window, "window", "", "expectation lifetime (e.g. 24h, 7d) — server-default if omitted")
+	c.Flags().StringVar(&window, "window", "", "expectation lifetime up to 1h (e.g. 30m, 1h) — server-default if omitted")
 	c.Flags().StringVar(&ttl, "ttl", "", "deprecated alias for --window")
 	_ = c.Flags().MarkDeprecated("ttl", "use --window instead")
 	bindMutationFlags(c, &mf)
 	return c
 }
 
-var expectDurationRe = regexp.MustCompile(`^[1-9][0-9]*(m|h|d|w)$`)
+var expectDurationRe = regexp.MustCompile(`^([1-9][0-9]*)(m|h)$`)
 
 func expectBody(from, subjectRegex, subjectAlias, purpose, window, ttl string) (map[string]any, error) {
 	domain, err := canonicalExpectationDomain(from)
@@ -77,9 +78,9 @@ func expectBody(from, subjectRegex, subjectAlias, purpose, window, ttl string) (
 	if duration == "" {
 		duration = ttl
 	}
-	if duration != "" && !expectDurationRe.MatchString(duration) {
+	if duration != "" && !expectDurationSupported(duration) {
 		return nil, exitcode.Wrap(exitcode.Usage,
-			fmt.Errorf("unsupported expectation duration %q; use a positive integer with m, h, d, or w (for example 30m, 24h, 7d)", duration))
+			fmt.Errorf("unsupported expectation duration %q; use 1m through 60m, or 1h", duration))
 	}
 
 	body := map[string]any{"domain": domain}
@@ -96,6 +97,25 @@ func expectBody(from, subjectRegex, subjectAlias, purpose, window, ttl string) (
 		body["expires_in"] = duration
 	}
 	return body, nil
+}
+
+func expectDurationSupported(duration string) bool {
+	matches := expectDurationRe.FindStringSubmatch(duration)
+	if matches == nil {
+		return false
+	}
+	n, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return false
+	}
+	switch matches[2] {
+	case "m":
+		return n <= 60
+	case "h":
+		return n == 1
+	default:
+		return false
+	}
 }
 
 func canonicalExpectationDomain(input string) (string, error) {

@@ -245,7 +245,7 @@ mmb whitelist create <sender-email-or-domain>                # exact sender/doma
 mmb whitelist create --sender <sender-email-or-domain>       # explicit form of the same exact rule
 mmb whitelist create --sender-regex <regex> [--subject-regex <regex>]
 mmb expect         --from <email-or-domain> [--subject-regex <regex>] [--purpose <text>] [--window <duration>]
-                  # stores the canonical sender domain/eTLD+1; --ttl remains a deprecated alias for --window
+                  # stores the canonical sender domain/eTLD+1; window is capped at 1h; --ttl remains a deprecated alias
 
 # Quarantine (agent-side; human-in-the-loop release happens in the dashboard)
 mmb quarantine list [--limit N]

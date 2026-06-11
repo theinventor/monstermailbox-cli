@@ -560,7 +560,7 @@ func TestMsgShowAliasStillWorks(t *testing.T) {
 
 func TestExpectPostsCanonicalDomainPayloadFromEmail(t *testing.T) {
 	_, cap, err := runCmd(t,
-		[]string{"expect", "--from", "noreply@mail.mapillary.com", "--subject-regex", "verify", "--purpose", "signup-verification", "--window", "7d"},
+		[]string{"expect", "--from", "noreply@mail.mapillary.com", "--subject-regex", "verify", "--purpose", "signup-verification", "--window", "1h"},
 		201, `{"id":"e_1"}`)
 	if err != nil {
 		t.Fatalf("expect returned error: %v", err)
@@ -587,14 +587,14 @@ func TestExpectPostsCanonicalDomainPayloadFromEmail(t *testing.T) {
 	if body["purpose"] != "signup-verification" {
 		t.Errorf("body.purpose MUST carry --purpose; got: %v", body["purpose"])
 	}
-	if body["expires_in"] != "7d" {
+	if body["expires_in"] != "1h" {
 		t.Errorf("body.expires_in MUST carry --window; got: %v", body["expires_in"])
 	}
 }
 
 func TestExpectPostsCanonicalDomainPayloadFromBareDomainAndLegacyTTL(t *testing.T) {
 	_, cap, err := runCmd(t,
-		[]string{"expect", "--from", "Login.Example.CO.UK", "--subject", "code", "--ttl", "24h"},
+		[]string{"expect", "--from", "Login.Example.CO.UK", "--subject", "code", "--ttl", "30m"},
 		201, `{"id":"e_1"}`)
 	if err != nil {
 		t.Fatalf("expect returned error: %v", err)
@@ -613,7 +613,7 @@ func TestExpectPostsCanonicalDomainPayloadFromBareDomainAndLegacyTTL(t *testing.
 	if body["purpose"] != "verification" {
 		t.Errorf("default purpose MUST be verification; got: %v", body["purpose"])
 	}
-	if body["expires_in"] != "24h" {
+	if body["expires_in"] != "30m" {
 		t.Errorf("deprecated --ttl MUST map to expires_in; got: %v", body["expires_in"])
 	}
 }
@@ -622,7 +622,7 @@ func TestExpectAcceptsMapillaryReproInputs(t *testing.T) {
 	for _, from := range []string{"mapillary.com", "noreply@mapillary.com"} {
 		t.Run(from, func(t *testing.T) {
 			_, cap, err := runCmd(t,
-				[]string{"expect", "--from", from, "--window", "7d"},
+				[]string{"expect", "--from", from, "--window", "1h"},
 				201, `{"id":"e_1"}`)
 			if err != nil {
 				t.Fatalf("expect returned error: %v", err)
@@ -635,7 +635,7 @@ func TestExpectAcceptsMapillaryReproInputs(t *testing.T) {
 			if body["domain"] != "mapillary.com" {
 				t.Errorf("body.domain MUST be mapillary.com; got: %v", body["domain"])
 			}
-			if body["expires_in"] != "7d" {
+			if body["expires_in"] != "1h" {
 				t.Errorf("body.expires_in MUST carry the requested window; got: %v", body["expires_in"])
 			}
 		})
@@ -651,7 +651,7 @@ func TestExpectRequiresFromFlag(t *testing.T) {
 
 func TestExpectDryRunShowsCanonicalPayload(t *testing.T) {
 	stdout, cap, err := runCmd(t,
-		[]string{"expect", "--from", "noreply@mapillary.com", "--window", "7d", "--dry-run"},
+		[]string{"expect", "--from", "noreply@mapillary.com", "--window", "1h", "--dry-run"},
 		200, `{}`)
 	if err != nil {
 		t.Fatalf("expect dry-run returned error: %v", err)
@@ -668,7 +668,7 @@ func TestExpectDryRunShowsCanonicalPayload(t *testing.T) {
 	if !ok {
 		t.Fatalf("dry-run body MUST be an object; got %#v", env["body"])
 	}
-	if body["domain"] != "mapillary.com" || body["expires_in"] != "7d" {
+	if body["domain"] != "mapillary.com" || body["expires_in"] != "1h" {
 		t.Errorf("dry-run body MUST show canonical domain and expires_in; got %#v", body)
 	}
 	if _, ok := body["from"]; ok {
@@ -680,18 +680,22 @@ func TestExpectDryRunShowsCanonicalPayload(t *testing.T) {
 }
 
 func TestExpectRejectsUnsupportedDurationBeforeHTTP(t *testing.T) {
-	_, cap, err := runCmd(t, []string{"expect", "--from", "mapillary.com", "--window", "forever"}, 200, `{}`)
-	if err == nil {
-		t.Fatalf("unsupported duration MUST return a usage error")
-	}
-	if got := exitcode.ExitCodeFor(err); got != exitcode.Usage {
-		t.Errorf("unsupported duration MUST be a usage error; got exit %d", got)
-	}
-	if cap.hits != 0 {
-		t.Errorf("unsupported duration MUST NOT make an HTTP call; server saw %d hit(s)", cap.hits)
-	}
-	if !strings.Contains(err.Error(), "unsupported expectation duration") {
-		t.Errorf("unsupported duration error MUST explain supported units; got: %v", err)
+	for _, window := range []string{"forever", "61m", "2h", "7d"} {
+		t.Run(window, func(t *testing.T) {
+			_, cap, err := runCmd(t, []string{"expect", "--from", "mapillary.com", "--window", window}, 200, `{}`)
+			if err == nil {
+				t.Fatalf("unsupported duration MUST return a usage error")
+			}
+			if got := exitcode.ExitCodeFor(err); got != exitcode.Usage {
+				t.Errorf("unsupported duration MUST be a usage error; got exit %d", got)
+			}
+			if cap.hits != 0 {
+				t.Errorf("unsupported duration MUST NOT make an HTTP call; server saw %d hit(s)", cap.hits)
+			}
+			if !strings.Contains(err.Error(), "unsupported expectation duration") {
+				t.Errorf("unsupported duration error MUST explain supported units; got: %v", err)
+			}
+		})
 	}
 }
 

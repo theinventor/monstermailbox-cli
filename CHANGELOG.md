@@ -6,7 +6,8 @@
   sender address or bare domain, deriving the canonical sender eTLD+1, and
   posting the current expectations API fields (`domain`, `expires_in`,
   `purpose`, and optional `subject_regex`). `--window` is now the documented
-  duration flag while `--ttl` remains a deprecated compatibility alias.
+  duration flag, capped to the server-supported one-hour window, while `--ttl`
+  remains a deprecated compatibility alias.
   Quarantine escalation now gives agents the dashboard owner-review path
   instead of a dead-end command, without exposing held body text, links, or
   attachments.
