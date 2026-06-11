@@ -244,11 +244,12 @@ mmb reply-not-all-with-custom-recipients <message-id> --to <addr> --body <s> [--
 mmb whitelist create <sender-email-or-domain>                # exact sender/domain trust rule
 mmb whitelist create --sender <sender-email-or-domain>       # explicit form of the same exact rule
 mmb whitelist create --sender-regex <regex> [--subject-regex <regex>]
-mmb expect         --from <addr> [--subject-regex <regex>] [--purpose <text>] [--window <duration>]
+mmb expect         --from <email-or-domain> [--subject-regex <regex>] [--purpose <text>] [--window <duration>]
+                  # stores the canonical sender domain/eTLD+1; --ttl remains a deprecated alias for --window
 
 # Quarantine (agent-side; human-in-the-loop release happens in the dashboard)
 mmb quarantine list [--limit N]
-mmb quarantine escalate <id>     # v1 stub
+mmb quarantine escalate <id>     # prints the dashboard owner-review path; never reveals held content
 
 # Webhooks
 mmb webhook create --name <label> --url <url> --event-preset trusted-inbox [--auth-bearer <token>] [--header "Name: value"]
@@ -389,6 +390,10 @@ These are deliberately out of scope. Humans, not agents, do them:
   exists (and a redacted preview); the human releases or rejects via
   the dashboard. Deliberate design choice; see
   `app/services/sanitizer/` and `app/services/risk_engine.rb`.
+- **Read quarantined body text, links, or attachments.** `mmb expect`
+  can predeclare expected verification mail by sender email or domain,
+  but release still depends on server-side scanner/auth gates or owner
+  dashboard review.
 - **MFA enrollment.** Passkeys / TOTP / backup codes are for the human
   owner's dashboard auth, not the agent.
 ## Config file

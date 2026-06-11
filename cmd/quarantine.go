@@ -13,12 +13,10 @@ import (
 // Convenience over `mmb inbox list --state=quarantined`; keeps the
 // review queue easy to script from agent-side local tooling.
 //
-// `mmb quarantine escalate <id>` is a v0 stub: the escalation flow
-// is owner-side (a human reviews + releases via the dashboard),
-// the agent CAN flag a message for accelerated review by writing
-// to the message's audit metadata. The endpoint isn't in v0
-// OpenAPI yet, so the stub returns "not implemented" cleanly
-// rather than masking the missing surface.
+// `mmb quarantine escalate <id>` is a safe guidance surface: the
+// release flow is owner-side (a human reviews + releases via the
+// dashboard), so the CLI must not expose held body text, links, or
+// attachments while pointing the agent at the supported path.
 func newQuarantineCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "quarantine",
@@ -56,10 +54,10 @@ func newQuarantineListCmd() *cobra.Command {
 func newQuarantineEscalateCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "escalate <id>",
-		Short: "Flag a quarantined message for accelerated human review (v1)",
+		Short: "Show the safe human-review path for a quarantined message",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("quarantine escalate is not yet implemented in v0 — release/reject must be done from the dashboard for now (message id: %s)", args[0])
+			return fmt.Errorf("quarantine release is human-reviewed in the MonsterMailbox dashboard; ask the mailbox owner to review message %s there. The CLI keeps quarantined body text, links, and attachments hidden until the owner releases the message", args[0])
 		},
 	}
 }
