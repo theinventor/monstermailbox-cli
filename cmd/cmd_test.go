@@ -558,9 +558,9 @@ func TestMsgShowAliasStillWorks(t *testing.T) {
 
 // ── expect ─────────────────────────────────────────────────────
 
-func TestExpectPostsToExpectationsEndpointWithFromBody(t *testing.T) {
+func TestExpectPostsCanonicalDomainPayloadFromEmail(t *testing.T) {
 	_, cap, err := runCmd(t,
-		[]string{"expect", "--from", "ceo@stripe.com", "--subject", "wire", "--ttl", "24h"},
+		[]string{"expect", "--from", "noreply@mail.mapillary.com", "--subject-regex", "verify", "--purpose", "signup-verification", "--window", "1h"},
 		201, `{"id":"e_1"}`)
 	if err != nil {
 		t.Fatalf("expect returned error: %v", err)
@@ -575,14 +575,70 @@ func TestExpectPostsToExpectationsEndpointWithFromBody(t *testing.T) {
 	if err := json.Unmarshal(cap.body, &body); err != nil {
 		t.Fatalf("body MUST be JSON; got: %s", cap.body)
 	}
-	if body["from"] != "ceo@stripe.com" {
-		t.Errorf("body.from MUST be ceo@stripe.com; got: %v", body["from"])
+	if _, ok := body["from"]; ok {
+		t.Errorf("body.from MUST NOT be sent to the canonical expectations API; got: %v", body["from"])
 	}
-	if body["subject"] != "wire" {
-		t.Errorf("body.subject MUST carry the --subject flag; got: %v", body["subject"])
+	if body["domain"] != "mapillary.com" {
+		t.Errorf("body.domain MUST be canonical eTLD+1; got: %v", body["domain"])
 	}
-	if body["ttl"] != "24h" {
-		t.Errorf("body.ttl MUST carry the --ttl flag; got: %v", body["ttl"])
+	if body["subject_regex"] != "verify" {
+		t.Errorf("body.subject_regex MUST carry --subject-regex; got: %v", body["subject_regex"])
+	}
+	if body["purpose"] != "signup-verification" {
+		t.Errorf("body.purpose MUST carry --purpose; got: %v", body["purpose"])
+	}
+	if body["expires_in"] != "1h" {
+		t.Errorf("body.expires_in MUST carry --window; got: %v", body["expires_in"])
+	}
+}
+
+func TestExpectPostsCanonicalDomainPayloadFromBareDomainAndLegacyTTL(t *testing.T) {
+	_, cap, err := runCmd(t,
+		[]string{"expect", "--from", "Login.Example.CO.UK", "--subject", "code", "--ttl", "30m"},
+		201, `{"id":"e_1"}`)
+	if err != nil {
+		t.Fatalf("expect returned error: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(cap.body, &body); err != nil {
+		t.Fatalf("body MUST be JSON; got: %s", cap.body)
+	}
+	if body["domain"] != "example.co.uk" {
+		t.Errorf("body.domain MUST be canonical eTLD+1 for bare domains; got: %v", body["domain"])
+	}
+	if body["subject_regex"] != "code" {
+		t.Errorf("deprecated --subject MUST map to subject_regex; got: %v", body["subject_regex"])
+	}
+	if body["purpose"] != "verification" {
+		t.Errorf("default purpose MUST be verification; got: %v", body["purpose"])
+	}
+	if body["expires_in"] != "30m" {
+		t.Errorf("deprecated --ttl MUST map to expires_in; got: %v", body["expires_in"])
+	}
+}
+
+func TestExpectAcceptsMapillaryReproInputs(t *testing.T) {
+	for _, from := range []string{"mapillary.com", "noreply@mapillary.com"} {
+		t.Run(from, func(t *testing.T) {
+			_, cap, err := runCmd(t,
+				[]string{"expect", "--from", from, "--window", "1h"},
+				201, `{"id":"e_1"}`)
+			if err != nil {
+				t.Fatalf("expect returned error: %v", err)
+			}
+
+			var body map[string]any
+			if err := json.Unmarshal(cap.body, &body); err != nil {
+				t.Fatalf("body MUST be JSON; got: %s", cap.body)
+			}
+			if body["domain"] != "mapillary.com" {
+				t.Errorf("body.domain MUST be mapillary.com; got: %v", body["domain"])
+			}
+			if body["expires_in"] != "1h" {
+				t.Errorf("body.expires_in MUST carry the requested window; got: %v", body["expires_in"])
+			}
+		})
 	}
 }
 
@@ -590,6 +646,56 @@ func TestExpectRequiresFromFlag(t *testing.T) {
 	_, _, err := runCmd(t, []string{"expect", "--subject", "x"}, 200, `{}`)
 	if err == nil {
 		t.Errorf("expect without --from MUST return an error; got nil")
+	}
+}
+
+func TestExpectDryRunShowsCanonicalPayload(t *testing.T) {
+	stdout, cap, err := runCmd(t,
+		[]string{"expect", "--from", "noreply@mapillary.com", "--window", "1h", "--dry-run"},
+		200, `{}`)
+	if err != nil {
+		t.Fatalf("expect dry-run returned error: %v", err)
+	}
+	if cap.hits != 0 {
+		t.Errorf("dry-run MUST NOT make an HTTP call; server saw %d hit(s)", cap.hits)
+	}
+
+	var env map[string]any
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatalf("dry-run output MUST be JSON; got %q", stdout)
+	}
+	body, ok := env["body"].(map[string]any)
+	if !ok {
+		t.Fatalf("dry-run body MUST be an object; got %#v", env["body"])
+	}
+	if body["domain"] != "mapillary.com" || body["expires_in"] != "1h" {
+		t.Errorf("dry-run body MUST show canonical domain and expires_in; got %#v", body)
+	}
+	if _, ok := body["from"]; ok {
+		t.Errorf("dry-run body MUST NOT show legacy from field; got %#v", body)
+	}
+	if _, ok := body["ttl"]; ok {
+		t.Errorf("dry-run body MUST NOT show legacy ttl field; got %#v", body)
+	}
+}
+
+func TestExpectRejectsUnsupportedDurationBeforeHTTP(t *testing.T) {
+	for _, window := range []string{"forever", "61m", "2h", "7d"} {
+		t.Run(window, func(t *testing.T) {
+			_, cap, err := runCmd(t, []string{"expect", "--from", "mapillary.com", "--window", window}, 200, `{}`)
+			if err == nil {
+				t.Fatalf("unsupported duration MUST return a usage error")
+			}
+			if got := exitcode.ExitCodeFor(err); got != exitcode.Usage {
+				t.Errorf("unsupported duration MUST be a usage error; got exit %d", got)
+			}
+			if cap.hits != 0 {
+				t.Errorf("unsupported duration MUST NOT make an HTTP call; server saw %d hit(s)", cap.hits)
+			}
+			if !strings.Contains(err.Error(), "unsupported expectation duration") {
+				t.Errorf("unsupported duration error MUST explain supported units; got: %v", err)
+			}
+		})
 	}
 }
 
@@ -774,15 +880,26 @@ func TestQuarantineListHitsInboxWithStateQuarantined(t *testing.T) {
 	}
 }
 
-// ── quarantine escalate (v0 stub) ──────────────────────────────
+// ── quarantine escalate guidance ───────────────────────────────
 
-func TestQuarantineEscalateReturnsExplicitNotImplemented(t *testing.T) {
+func TestQuarantineEscalateGivesDashboardGuidanceWithoutHeldContent(t *testing.T) {
 	_, _, err := runCmd(t, []string{"quarantine", "escalate", "msg_42"}, 200, `{}`)
 	if err == nil {
-		t.Errorf("quarantine escalate MUST return an explicit not-implemented error in v0; got nil")
+		t.Errorf("quarantine escalate MUST return explicit dashboard guidance; got nil")
 	}
-	if err != nil && !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("error message MUST be the not-implemented stub; got: %v", err)
+	if err == nil {
+		return
+	}
+	msg := err.Error()
+	for _, want := range []string{"dashboard", "owner", "message msg_42", "hidden"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message MUST mention %q; got: %v", want, err)
+		}
+	}
+	for _, forbidden := range []string{"http://", "https://", "verification link", "body:"} {
+		if strings.Contains(strings.ToLower(msg), forbidden) {
+			t.Errorf("error message MUST NOT expose quarantined content markers %q; got: %v", forbidden, err)
+		}
 	}
 }
 
@@ -809,7 +926,7 @@ func TestEveryAPICommandSurfacesEmpty4xxAsAVisibleError(t *testing.T) {
 	}{
 		{"inbox_list", []string{"inbox", "list"}},
 		{"msg_get", []string{"msg", "get", "abc"}},
-		{"expect", []string{"expect", "--from", "ceo@x.com", "--subject", "wire"}},
+		{"expect", []string{"expect", "--from", "ceo@example.com", "--subject-regex", "wire"}},
 		{"whitelist_create", []string{"whitelist", "create", "alice@x.com"}},
 		{"send", []string{"send", "--to", "x@y.com", "--subject", "s", "--body", "b"}},
 		{"new_email", []string{"new-email", "--to", "x@y.com", "--subject", "s", "--body", "b"}},
@@ -958,7 +1075,7 @@ func TestIdempotencyKeyHeaderIsSent(t *testing.T) {
 	}{
 		{"register", []string{"register", "--address", "x", "--email", "y@z.com", "--idempotency-key", "k-reg"}},
 		{"new_email", []string{"new-email", "--to", "x@y", "--subject", "s", "--body", "b", "--idempotency-key", "k-ne"}},
-		{"expect", []string{"expect", "--from", "x@y", "--idempotency-key", "k-ex"}},
+		{"expect", []string{"expect", "--from", "agent@example.com", "--idempotency-key", "k-ex"}},
 		{"whitelist_create", []string{"whitelist", "create", "alice@x.com", "--idempotency-key", "k-wl"}},
 	}
 	for _, c := range cases {
@@ -984,7 +1101,7 @@ func TestDryRunSkipsHTTPAndEmitsEnvelope(t *testing.T) {
 	}{
 		{"register", []string{"register", "--address", "x", "--email", "y@z.com", "--dry-run"}, "/agents/register"},
 		{"new_email", []string{"new-email", "--to", "a@b.c", "--subject", "s", "--body", "b", "--dry-run"}, "/send"},
-		{"expect", []string{"expect", "--from", "x@y", "--dry-run"}, "/expectations"},
+		{"expect", []string{"expect", "--from", "agent@example.com", "--dry-run"}, "/expectations"},
 		{"whitelist_create", []string{"whitelist", "create", "alice@x.com", "--dry-run"}, "/whitelist"},
 	}
 	for _, c := range cases {
@@ -1080,7 +1197,7 @@ func TestAuthHeaderIsSetOnAuthenticatedRequests(t *testing.T) {
 	cases := [][]string{
 		{"inbox", "list"},
 		{"msg", "get", "x"},
-		{"expect", "--from", "x@y"},
+		{"expect", "--from", "agent@example.com"},
 		{"whitelist", "create", "x@y"},
 		{"send", "--to", "x@y", "--subject", "s", "--body", "b"},
 		{"quarantine", "list"},

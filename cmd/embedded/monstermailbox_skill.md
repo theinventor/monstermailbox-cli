@@ -99,6 +99,8 @@ actually did it.
 - mmb --profile PROFILE whoami — confirm a saved profile for one invocation without changing the default profile.
 - mmb whitelist create sender@example.com — add an exact sender/domain whitelist rule; the CLI sends the API `sender` field.
 - mmb whitelist create --sender-regex REGEX [--subject-regex REGEX] — add an explicit regex whitelist rule; use only when exact sender trust is not sufficient.
+- mmb expect --from EMAIL_OR_DOMAIN [--subject-regex REGEX] [--window 1h] — predeclare expected verification mail; the CLI sends canonical `domain`, optional `subject_regex`, `purpose`, and `expires_in` fields.
+- mmb quarantine escalate MESSAGE_ID — show the dashboard owner-review path for held mail; the CLI does not reveal quarantined body text, links, or attachments.
 
 ## Notes
 

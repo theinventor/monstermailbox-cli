@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Fixed `mmb expect` for expected verification mail by accepting either a
+  sender address or bare domain, deriving the canonical sender eTLD+1, and
+  posting the current expectations API fields (`domain`, `expires_in`,
+  `purpose`, and optional `subject_regex`). `--window` is now the documented
+  duration flag, capped to the server-supported one-hour window, while `--ttl`
+  remains a deprecated compatibility alias.
+  Quarantine escalation now gives agents the dashboard owner-review path
+  instead of a dead-end command, without exposing held body text, links, or
+  attachments.
 - Added staff-only webhook recovery commands under `mmb staff
   webhook-deliveries`. Operators with staff API keys can list failed/gave-up
   deliveries, inspect redacted metadata, and redrive one real delivery with
