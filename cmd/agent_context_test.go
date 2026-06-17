@@ -51,7 +51,7 @@ func TestAgentContext_EnumeratesEveryTopLevelCommand(t *testing.T) {
 	}
 	want := []string{
 		"agent-context", "agent-setup", "skill", "auth", "whoami", "register", "update",
-		"inbox", "msg", "test-email", "expect", "whitelist", "send",
+		"inbox", "messages", "msg", "test-email", "expect", "whitelist", "send",
 		// Outbound surface: reply-all primary, narrow secondary,
 		// new-email tertiary. The pre-v0.7 reply-to-email alias is
 		// hidden and MUST NOT show up here.
@@ -339,6 +339,30 @@ func TestAgentContext_FlagsHaveTypeAndUsage(t *testing.T) {
 	}
 	if state["type"] == nil || state["usage"] == nil {
 		t.Errorf("--state entry MUST include type+usage; got %v", state)
+	}
+}
+
+func TestAgentContext_ExposesParticipantHistoryCommand(t *testing.T) {
+	ctx := runAgentContext(t)
+	commands := ctx["commands"].(map[string]any)
+	messages := commands["messages"].(map[string]any)
+	subs := messages["subcommands"].(map[string]any)
+	list := subs["list"].(map[string]any)
+
+	if args, has := list["args"]; has {
+		t.Errorf("messages list args = %v; want no positional args", args)
+	}
+	flags := list["flags"].(map[string]any)
+	for _, name := range []string{"--participant", "--state", "--work-state", "--limit", "--cursor"} {
+		if _, has := flags[name]; !has {
+			t.Errorf("messages list agent-context MUST expose %s; flags=%v", name, keysOf(flags))
+		}
+	}
+	desc := list["description"].(string)
+	for _, want := range []string{"From", "To", "Cc", "Bcc-only", "read-only"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("messages list description MUST mention %q; got %q", want, desc)
+		}
 	}
 }
 

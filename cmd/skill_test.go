@@ -129,6 +129,7 @@ func TestReadmeDocumentsCanonicalAgentSetup(t *testing.T) {
 		"mmb agent-context",
 		"mmb skill get monstermailbox",
 		"mmb msg get        <id> [--peek]",
+		"mmb messages list  --participant <email>",
 		"mmb inbox list     --work-state inbox",
 		"mmb msg claim      <id> --note <s>",
 		"mmb new-email      --to <addr>",

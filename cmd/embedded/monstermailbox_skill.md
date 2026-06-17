@@ -84,6 +84,9 @@ actually did it.
 - mmb skill get monstermailbox — fetch this official sample skill.
 - mmb inbox list --work-state inbox — list readable messages still in the
   agent's work queue.
+- mmb messages list --participant person@example.com --limit 20 — list
+  read-only sanitized message history involving a participant; matches From,
+  To, and Cc, not Bcc-only delivery metadata.
 - mmb msg get MESSAGE_ID --peek — inspect a message/thread before deciding or
   replying.
 - mmb msg claim MESSAGE_ID --note "..." — claim a message before acting.

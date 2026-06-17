@@ -216,6 +216,7 @@ mmb skill get monstermailbox
 
 # Inbox (read)
 mmb inbox list     [--state trusted|quarantined|rejected] [--limit N]
+mmb messages list  --participant <email> [--state trusted|quarantined|rejected] [--work-state <state>] [--limit N] [--cursor TOKEN]
 mmb inbox watch    --json                          # SSE stream of events
 mmb msg get        <id> [--peek]
 mmb msg attachment download <message-id> <attachment-id> --output <path> [--force]
@@ -428,6 +429,7 @@ cli/mmb/
 │   ├── whoami.go
 │   ├── register.go            (low-level POST /agents/register; auth login wraps it)
 │   ├── inbox.go               (inbox list + inbox watch)
+│   ├── messages.go            (participant history search)
 │   ├── msg.go                 (msg get + work_state transitions)
 │   ├── expect.go
 │   ├── whitelist.go
