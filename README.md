@@ -216,6 +216,8 @@ mmb skill get monstermailbox
 
 # Inbox (read)
 mmb inbox list     [--state trusted|quarantined|rejected] [--limit N]
+mmb messages list  --participant <addr> [--state trusted|quarantined|rejected] [--work-state inbox] [--limit N] [--cursor TOKEN]
+                  # read-only participant history; matches From/To/CC, excludes BCC
 mmb inbox watch    --json                          # SSE stream of events
 mmb msg get        <id> [--peek]
 mmb msg attachment download <message-id> <attachment-id> --output <path> [--force]

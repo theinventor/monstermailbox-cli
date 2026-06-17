@@ -1177,6 +1177,7 @@ func TestExitCodes_UsageErrorExitsTwo(t *testing.T) {
 		{"register_missing_required", []string{"register"}},
 		{"expect_missing_from", []string{"expect"}},
 		{"inbox_list_invalid_state", []string{"inbox", "list", "--state", "secret"}},
+		{"messages_list_missing_participant", []string{"messages", "list"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
