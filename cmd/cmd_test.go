@@ -505,6 +505,85 @@ data: {"id":"t1","state":"trusted"}
 	}
 }
 
+// ── messages list ───────────────────────────────────────────────
+
+func TestMessagesListGetsParticipantHistoryWithAuth(t *testing.T) {
+	_, cap, err := runCmd(t, []string{"messages", "list", "--participant", "person@example.com"}, 200, `{"messages":[]}`)
+	if err != nil {
+		t.Fatalf("messages list returned error: %v", err)
+	}
+	if cap.method != http.MethodGet || cap.path != "/messages" {
+		t.Errorf("expected GET /messages; got %s %s", cap.method, cap.path)
+	}
+	if cap.authHeader != "Bearer mmb_testkey1234567890" {
+		t.Errorf("expected Bearer auth; got: %q", cap.authHeader)
+	}
+	if !strings.Contains(cap.rawQuery, "participant=person%40example.com") {
+		t.Errorf("expected participant query param; got: %q", cap.rawQuery)
+	}
+}
+
+func TestMessagesListPropagatesFiltersLimitAndCursor(t *testing.T) {
+	_, cap, err := runCmd(t, []string{
+		"messages", "list",
+		"--participant", "person@example.com",
+		"--state", "quarantined",
+		"--work-state", "blocked",
+		"--limit", "25",
+		"--cursor", "abc123",
+	}, 200, `{"messages":[]}`)
+	if err != nil {
+		t.Fatalf("messages list returned error: %v", err)
+	}
+	for _, want := range []string{
+		"participant=person%40example.com",
+		"state=quarantined",
+		"work_state=blocked",
+		"limit=25",
+		"cursor=abc123",
+	} {
+		if !strings.Contains(cap.rawQuery, want) {
+			t.Errorf("query MUST include %s; got %q", want, cap.rawQuery)
+		}
+	}
+}
+
+func TestMessagesListRequiresParticipant(t *testing.T) {
+	_, _, cap, err := runCmdSplit(t, []string{"messages", "list"}, 200, `{}`)
+	if err == nil {
+		t.Fatalf("messages list without --participant MUST error")
+	}
+	if cap.hits != 0 {
+		t.Fatalf("usage error should not make an HTTP request; got %d hit(s)", cap.hits)
+	}
+}
+
+func TestMessagesListRejectsInvalidEnumsAndNamesValidSet(t *testing.T) {
+	_, stderr, _, err := runCmdSplit(t,
+		[]string{"messages", "list", "--participant", "person@example.com", "--state", "secret"},
+		200, `{}`)
+	if err == nil {
+		t.Fatalf("invalid --state MUST surface an error")
+	}
+	for _, want := range []string{"trusted", "quarantined", "rejected", "secret"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("state error MUST name %q; got %q", want, stderr)
+		}
+	}
+
+	_, stderr, _, err = runCmdSplit(t,
+		[]string{"messages", "list", "--participant", "person@example.com", "--work-state", "secret"},
+		200, `{}`)
+	if err == nil {
+		t.Fatalf("invalid --work-state MUST surface an error")
+	}
+	for _, want := range []string{"inbox", "blocked", "secret"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("work-state error MUST name %q; got %q", want, stderr)
+		}
+	}
+}
+
 // ── msg get ────────────────────────────────────────────────────
 
 func TestMsgGetHitsMsgIdEndpoint(t *testing.T) {
@@ -925,6 +1004,7 @@ func TestEveryAPICommandSurfacesEmpty4xxAsAVisibleError(t *testing.T) {
 		argv []string
 	}{
 		{"inbox_list", []string{"inbox", "list"}},
+		{"messages_list", []string{"messages", "list", "--participant", "person@example.com"}},
 		{"msg_get", []string{"msg", "get", "abc"}},
 		{"expect", []string{"expect", "--from", "ceo@example.com", "--subject-regex", "wire"}},
 		{"whitelist_create", []string{"whitelist", "create", "alice@x.com"}},
@@ -981,6 +1061,7 @@ func TestEveryAPICommandPrintsBodyAndStillErrorsOnNon2xx(t *testing.T) {
 		argv []string
 	}{
 		{"inbox_list", []string{"inbox", "list"}},
+		{"messages_list", []string{"messages", "list", "--participant", "person@example.com"}},
 		{"msg_get", []string{"msg", "get", "abc"}},
 		{"register", []string{"register", "--address", "x", "--email", "y@z.com"}},
 	}
@@ -1177,6 +1258,7 @@ func TestExitCodes_UsageErrorExitsTwo(t *testing.T) {
 		{"register_missing_required", []string{"register"}},
 		{"expect_missing_from", []string{"expect"}},
 		{"inbox_list_invalid_state", []string{"inbox", "list", "--state", "secret"}},
+		{"messages_list_missing_participant", []string{"messages", "list"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
