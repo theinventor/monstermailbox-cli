@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Added `mmb hermes install` — one-command install of the MonsterMailbox platform
+  plugin into a Hermes agent. Writes the plugin to
+  `<hermes-home>/plugins/monstermailbox/` and patches `config.yaml`
+  (comment-preserving) with `plugins.enabled += monstermailbox`,
+  `platform_toolsets.monstermailbox: [hermes-cli]` (so the agent's turn has a
+  terminal tool — the step `hermes plugins install` omits), and
+  `command_allowlist += "mmb *"`. Inbound arrives over the SSE stream; no webhook.
+  Supports `--home`, `--dry-run`, `--force`; idempotent.
 - Added `mmb openclaw install` — one-command install of the MonsterMailbox plugin
   into an OpenClaw agent. Writes the plugin to
   `<openclaw-home>/extensions/monstermailbox/`, links the openclaw SDK so its
