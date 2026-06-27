@@ -55,11 +55,14 @@ func TestReader_MultipleDataLinesJoinWithNewline(t *testing.T) {
 	}
 }
 
-func TestReader_IgnoresIDAndRetryFields(t *testing.T) {
+func TestReader_ParsesIDAndIgnoresRetry(t *testing.T) {
 	in := "id: 42\nretry: 3000\nevent: x\ndata: y\n\n"
 	got := collect(t, in)
 	if len(got) != 1 || got[0].Name != "x" {
-		t.Errorf("id/retry MUST be ignored without breaking dispatch; got %+v", got)
+		t.Fatalf("retry MUST be ignored without breaking dispatch; got %+v", got)
+	}
+	if got[0].ID != "42" {
+		t.Errorf("id MUST be parsed onto the event (resume cursor); got ID=%q", got[0].ID)
 	}
 }
 

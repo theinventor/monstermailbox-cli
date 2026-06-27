@@ -13,9 +13,10 @@
 // reset the disconnect timer when the server proves it's alive but
 // nothing semantic is happening.
 //
-// Lines we ignore: id:, retry:, BOM. Adding them would not change
-// behavior for monstermailbox's stream and would muddy the test
-// surface.
+// We parse `id:` and expose it on the dispatched Event so callers can
+// track a resume cursor and send it back as `Last-Event-ID` on
+// reconnect (the server replays inbox events past that id). `retry:`
+// and BOM are still ignored.
 package sse
 
 import (
@@ -26,9 +27,12 @@ import (
 
 // Event is one dispatched SSE event. Empty Name + empty Data with
 // IsComment=true represents a heartbeat-comment line from the server.
+// ID carries the `id:` field when present (the server sets it to the
+// inbox message id); empty when the event had no id line.
 type Event struct {
 	Name      string
 	Data      string
+	ID        string
 	IsComment bool
 }
 
@@ -61,6 +65,7 @@ func (r *Reader) Next() (Event, error) {
 	var (
 		name string
 		data []string
+		id   string
 	)
 
 	for r.scanner.Scan() {
@@ -79,7 +84,7 @@ func (r *Reader) Next() (Event, error) {
 			if name == "" && len(data) == 0 {
 				continue
 			}
-			return Event{Name: name, Data: strings.Join(data, "\n")}, nil
+			return Event{Name: name, Data: strings.Join(data, "\n"), ID: id}, nil
 		}
 
 		field, value, ok := splitField(line)
@@ -91,8 +96,10 @@ func (r *Reader) Next() (Event, error) {
 			name = value
 		case "data":
 			data = append(data, value)
+		case "id":
+			id = value
 		default:
-			// id, retry, etc. — ignored. See pkg comment.
+			// retry, BOM, etc. — ignored. See pkg comment.
 		}
 	}
 	if err := r.scanner.Err(); err != nil {

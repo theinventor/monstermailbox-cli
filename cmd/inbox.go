@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,14 @@ import (
 	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
 	"github.com/theinventor/monstermailbox-cli/internal/sse"
 )
+
+// streamIdleTimeout bounds how long the SSE connection may go without
+// ANY traffic (event or heartbeat comment) before we treat it as dead
+// and reconnect. Must be comfortably larger than the server's heartbeat
+// interval (15s) so a single delayed/lost heartbeat doesn't cause a
+// needless reconnect, but small enough that a truly dead connection is
+// noticed promptly.
+const streamIdleTimeout = 45 * time.Second
 
 // inbox is the parent for `inbox list`, `inbox watch`, `inbox wait`.
 func newInboxCmd() *cobra.Command {
@@ -295,13 +304,19 @@ func runEventStream(cmd *cobra.Command, opts eventStreamOptions) error {
 	const maxBackoff = 30 * time.Second
 	reconnects := 0
 
+	// lastEventID is the resume cursor: the id of the most recent inbox
+	// event we've seen. Sent as Last-Event-ID on every (re)connect so the
+	// server replays anything that landed during the gap. Persists across
+	// reconnects within a single watch/wait invocation.
+	lastEventID := ""
+
 	for {
 		if !opts.overallDeadline.IsZero() && time.Now().After(opts.overallDeadline) {
 			return exitcode.Wrap(exitcode.Generic,
 				fmt.Errorf("timed out after %s with no matching event", opts.overallDeadline.Sub(time.Now()).Abs()))
 		}
 
-		emitted, err := streamOnce(out, cli, opts)
+		emitted, err := streamOnce(out, cli, opts, &lastEventID)
 		if emitted && opts.stopOnFirst {
 			return nil
 		}
@@ -337,12 +352,28 @@ func runEventStream(cmd *cobra.Command, opts eventStreamOptions) error {
 	}
 }
 
-// streamOnce opens the /events stream and consumes events until EOF
-// or transport error. Returns (didEmitMatching, err). Heartbeat
-// comments are silently consumed (proof of life — they reset the
-// connection's effective freshness without polluting stdout).
-func streamOnce(out io.Writer, cli *client.Client, opts eventStreamOptions) (bool, error) {
-	resp, err := cli.Do(http.MethodGet, "/events", nil, nil)
+// streamOnce opens the /events stream and consumes events until EOF,
+// transport error, or the idle watchdog fires. Returns
+// (didEmitMatching, err). Heartbeat comments are silently consumed
+// (proof of life — they reset the idle watchdog without polluting
+// stdout). lastEventID is read to resume via Last-Event-ID and updated
+// as inbox events (which carry an id) arrive.
+//
+// The stream uses StreamHTTPClient (no total timeout); liveness is the
+// caller's job, enforced here by a context that we cancel if no event
+// or heartbeat arrives within streamIdleTimeout. This replaces the old
+// behavior where a 30s http.Client.Timeout killed the stream — and thus
+// dropped any event landing in the reconnect gap — every 30 seconds.
+func streamOnce(out io.Writer, cli *client.Client, opts eventStreamOptions, lastEventID *string) (bool, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var headers map[string]string
+	if lastEventID != nil && *lastEventID != "" {
+		headers = map[string]string{"Last-Event-ID": *lastEventID}
+	}
+
+	resp, err := cli.DoStream(ctx, "/events", headers)
 	if err != nil {
 		return false, fmt.Errorf("GET /events: %w", err)
 	}
@@ -358,6 +389,12 @@ func streamOnce(out io.Writer, cli *client.Client, opts eventStreamOptions) (boo
 			fmt.Errorf("GET /events: HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode)))
 	}
 
+	// Idle watchdog: cancel the request (unblocking the read) if the
+	// stream goes silent past streamIdleTimeout. Reset on every event,
+	// including heartbeat comments.
+	watchdog := time.AfterFunc(streamIdleTimeout, cancel)
+	defer watchdog.Stop()
+
 	r := sse.New(resp.Body)
 	emitted := false
 	for {
@@ -368,9 +405,23 @@ func streamOnce(out io.Writer, cli *client.Client, opts eventStreamOptions) (boo
 		if err != nil {
 			return emitted, err
 		}
+		watchdog.Reset(streamIdleTimeout)
+
+		// Track the resume cursor from any event carrying an id (inbox
+		// events do; connected/heartbeat/outbound don't).
+		if ev.ID != "" && lastEventID != nil {
+			*lastEventID = ev.ID
+		}
+
 		if ev.IsComment {
-			// Heartbeat — keep the connection alive in our timer logic
-			// (tracked implicitly because we re-enter Next), don't emit.
+			// Heartbeat comment — proof of life only, don't emit.
+			continue
+		}
+
+		// Older servers emitted heartbeat as a NAMED event rather than a
+		// comment. Swallow it so it never pollutes stdout or satisfies a
+		// one-shot `wait` (it carries no trust state).
+		if ev.Name == "heartbeat" {
 			continue
 		}
 
