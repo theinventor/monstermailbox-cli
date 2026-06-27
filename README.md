@@ -86,24 +86,59 @@ the human through the tool-recommended path instead of only pasting commands:
    mmb skill get monstermailbox
    ```
 
+## Receiving email (recommended): install the runtime plugin
+
+To have new mail actually wake the agent, install the plugin for your agent
+runtime. The plugin subscribes to the MonsterMailbox SSE event stream
+(`mmb inbox watch`) — **no public endpoint, no webhook, no signing secret, and
+no tunnel required**.
+
+- **Hermes** — writes the platform plugin and patches `~/.hermes/config.yaml`
+  so the agent's turn has a terminal tool available:
+
+  ```sh
+  mmb hermes install
+  ```
+
+- **OpenClaw** — writes the plugin and patches `~/.openclaw/openclaw.json`:
+
+  ```sh
+  mmb openclaw install
+  ```
+
+Both ship in mmb v0.14.0+ and have been tested end-to-end on real Hermes and
+OpenClaw installs. Under the hood they run `mmb inbox watch` (Server-Sent
+Events) to receive inbox events directly over the agent's authenticated CLI
+session.
+
+> Webhooks remain available as an **advanced/optional** path (see
+> [Advanced: webhooks](#advanced-webhooks-optional) below), but they require a
+> public HTTPS receiver, an HMAC signature handshake, and SSRF-valid DNS — and
+> on Hermes the webhook channel runs with a stripped toolset (no shell), which
+> is why the plugin path is preferred for waking the agent.
+
 The deterministic setup loop is:
 
 ```sh
-mmb agent-setup --address <local_part> --email <human_owner_email> \
-  --webhook-url https://your-receiver.example.com/mmb
+mmb agent-setup --address <local_part> --email <human_owner_email>
 ```
+
+Prefer the runtime plugin (`mmb hermes install` / `mmb openclaw install`) for
+receiving mail. Webhooks are optional; only pass `--webhook-url
+https://your-receiver.example.com/mmb` to `mmb agent-setup` if you already
+operate a public HTTPS receiver.
 
 `mmb agent-setup` is JSON-first and noninteractive. It reports stage status for
 the CLI/API target, saved profile/auth, human claim/adoption, agent-context,
-sample skill, webhook configuration, synthetic webhook delivery, real test
-email creation, `mmb msg get <id> --peek` message fetch, optional test-message
-work-state handling, and the final pass/fail result. By default it waits up to
-15 seconds for the synthetic webhook delivery to succeed, so a final `pass`
-proves the receiver accepted the signed webhook and the real inbox test message
-was fetched. Missing auth, unclaimed owners, unadopted agents, unreachable
-webhooks, missing backend test-email support, skipped verification, and
-unfetched test messages return actionable `needs_input`, `pending`, or `fail`
-stages with safe next commands.
+sample skill, optional webhook configuration, synthetic webhook delivery, real
+test email creation, `mmb msg get <id> --peek` message fetch, optional
+test-message work-state handling, and the final pass/fail result. When a
+`--webhook-url` is supplied it waits up to 15 seconds for the synthetic webhook
+delivery to succeed, so a final `pass` proves the receiver accepted the signed
+webhook and the real inbox test message was fetched. Missing auth, unclaimed
+owners, unadopted agents, unreachable webhooks, missing backend test-email
+support, skipped verification, and unfetched test messages return actionable
+`needs_input`, `pending`, or `fail` stages with safe next commands.
 
 ## First-time auth — `mmb auth login`
 
@@ -207,8 +242,12 @@ mmb auth migrate  --profile <name> | --all     # move file-backed keys to keycha
 mmb whoami
 mmb agent-context
 
-# Guided deterministic setup loop
-mmb agent-setup --address <local> --email <owner> --webhook-url <url>
+# Receiving email (recommended): install the runtime plugin (SSE, no webhook)
+mmb hermes install                 # writes the plugin + patches ~/.hermes/config.yaml
+mmb openclaw install               # writes the plugin + patches ~/.openclaw/openclaw.json
+
+# Guided deterministic setup loop (webhook is optional; prefer the plugin above)
+mmb agent-setup --address <local> --email <owner> [--webhook-url <url>]
 mmb agent-setup --webhook-id <id> [--wait-delivery <duration>] [--mark-test-done]
 
 # Agent setup resources
@@ -252,7 +291,8 @@ mmb expect         --from <email-or-domain> [--subject-regex <regex>] [--purpose
 mmb quarantine list [--limit N]
 mmb quarantine escalate <id>     # prints the dashboard owner-review path; never reveals held content
 
-# Webhooks
+# Webhooks (advanced/optional — only if you already host a public HTTPS receiver;
+# to wake the agent, prefer `mmb hermes install` / `mmb openclaw install` above)
 mmb webhook create --name <label> --url <url> --event-preset trusted-inbox [--auth-bearer <token>] [--header "Name: value"]
 mmb webhook create --name <label> --url <url> --event-preset quarantine-aware-inbox
 mmb webhook create --name <label> --url <url> --event <event> [--event <event>...]
@@ -283,13 +323,15 @@ synthetic inbox `Message`, emits a normal `inbox.new` webhook payload with
 `webhook_delivery_expected`, and next-step hints such as
 `mmb msg get <message_id> --peek`.
 
-`mmb agent-setup` runs both pieces together: it can create or verify an
-`inbox.new` webhook, fire `mmb webhook test` semantics, create the real
-synthetic inbox test email, fetch the resulting message with `peek=true`, and
-optionally claim/mark only that test message done with `--mark-test-done`.
-Final `pass` requires confirmed synthetic webhook delivery/signing and a
-successful real test-message fetch; set `--wait-delivery 0s` only when you want
-a partial `pending` report instead of waiting.
+`mmb agent-setup` runs the test-email pieces together: it creates the real
+synthetic inbox test email, fetches the resulting message with `peek=true`, and
+optionally claims/marks only that test message done with `--mark-test-done`.
+When you pass the optional `--webhook-url`, it also creates or verifies an
+`inbox.new` webhook and fires `mmb webhook test` semantics; in that case a final
+`pass` additionally requires confirmed synthetic webhook delivery/signing, and
+`--wait-delivery 0s` produces a partial `pending` report instead of waiting.
+Most agents should skip the webhook flow entirely and install the runtime plugin
+(`mmb hermes install` / `mmb openclaw install`) to receive mail over SSE.
 
 Outbound attachment flags read local files and send them to the API as safe
 attachment objects: basename filename, detected content type, size, and base64
@@ -326,7 +368,15 @@ mmb whitelist create --sender-regex '@stripe\.com\z' --subject-regex '\Ainvoice 
 The older `mmb whitelist add ...` spelling remains as a hidden deprecated alias
 for compatibility, but new agents should call `mmb whitelist create`.
 
-## Webhook Event Choices
+## Advanced: webhooks (optional)
+
+Webhooks are **not** the recommended way to wake an agent — use the runtime
+plugin (`mmb hermes install` / `mmb openclaw install`) instead, which streams
+inbox events over SSE with no public endpoint. This section is only for
+integrations that already operate a public HTTPS receiver (custom services,
+existing OpenClaw/AlphaClaw webhook receivers, audit/observability sinks).
+
+### Webhook event choices
 
 Choose the smallest event set that matches the receiver:
 
@@ -363,8 +413,9 @@ Use `mmb feedback` for local CLI-maintainer notes. That command writes a local
 JSONL ledger and only posts upstream when `MONSTERMAILBOX_FEEDBACK_ENDPOINT` is
 configured, so it is not the product/support intake path.
 
-## Webhook Auth Headers
+## Webhook auth headers (advanced/optional)
 
+Only relevant if you use the optional webhook path above.
 Receivers such as OpenClaw/AlphaClaw can require `Authorization: Bearer ...`
 or `x-openclaw-token` headers and reject query-string tokens. Configure those
 as delivery headers; MonsterMailbox encrypts the values at rest and redacts
