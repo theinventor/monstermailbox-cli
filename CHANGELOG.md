@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Fixed `mmb inbox watch` / `mmb inbox wait` silently dropping events. The
+  shared HTTP client's 30s total timeout was killing the long-lived `/events`
+  SSE stream every 30 seconds; combined with the server's live-only stream this
+  lost any event that landed during the reconnect gap (messages stayed visible
+  via `mmb inbox list` but never woke a watcher). The stream now uses a
+  dedicated no-timeout client with a 45s idle watchdog, parses the SSE `id:`
+  field, and sends `Last-Event-ID` on reconnect so the server replays anything
+  missed. Named heartbeat events are also swallowed so they can't pollute output
+  or falsely satisfy a one-shot `wait`.
 - Fixed `mmb expect` for expected verification mail by accepting either a
   sender address or bare domain, deriving the canonical sender eTLD+1, and
   posting the current expectations API fields (`domain`, `expires_in`,
