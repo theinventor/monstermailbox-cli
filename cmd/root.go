@@ -63,6 +63,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newAgentSetupCmd())
 	root.AddCommand(newSkillCmd())
 	root.AddCommand(newOpenClawCmd())
+	root.AddCommand(newHermesCmd())
 	root.AddCommand(newAuthCmd())
 	root.AddCommand(newWhoamiCmd())
 	root.AddCommand(newRegisterCmd())

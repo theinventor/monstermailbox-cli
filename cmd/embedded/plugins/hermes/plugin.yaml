@@ -1,0 +1,19 @@
+name: monstermailbox
+label: MonsterMailbox
+kind: platform
+version: 1.0.0
+description: >
+  MonsterMailbox gateway adapter for Hermes. Streams inbound agent email over the
+  MonsterMailbox SSE event feed (mmb inbox watch / GET /events) and replies via the
+  mmb CLI. No public webhook endpoint required.
+author: MonsterMailbox
+requires_env: []
+optional_env:
+  - name: MMB_ALLOWED_SENDERS
+    description: "Comma-separated sender addresses allowed to drive the agent (default: rely on server trust state)"
+    prompt: "Allowed senders (comma-separated, blank = trusted-only)"
+    password: false
+  - name: MMB_BIN
+    description: "Path to the mmb binary (default: 'mmb' on PATH)"
+    prompt: "mmb binary path"
+    password: false
