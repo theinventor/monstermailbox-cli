@@ -31,6 +31,30 @@ Use the official mmb CLI for MonsterMailbox.
 
 - CLI: mmb (official CLI on PATH, or fix it)
 
+## Receiving mail (recommended)
+
+Connect the agent to its inbox over the SSE event stream — no webhook, no public
+endpoint, no signing secret, no tunnel. The first-class runtime plugins are the
+recommended path and are tested end-to-end (mmb CLI v0.14.0+):
+
+- `mmb hermes install` — install the Hermes plugin so the agent is woken on new
+  trusted mail over the stream.
+- `mmb openclaw install` — install the OpenClaw plugin for the same SSE wakeup.
+
+Both plugins use `mmb inbox watch` under the hood. To consume the stream
+directly:
+
+- `mmb inbox watch --json --state trusted` — long-lived SSE stream of newly
+  trusted readable mail; emits one JSON event per message.
+- `mmb inbox wait --state trusted` — block until the next trusted message
+  arrives, then return (handy for one-shot scripts and cron-free loops).
+
+Webhooks still exist but are no longer the recommended setup — see the
+advanced/optional webhook notes below. They require a public HTTPS URL, an HMAC
+signing handshake, and SSRF-valid DNS, and on Hermes the webhook channel runs
+with a stripped toolset (no shell). Prefer the plugins unless you already host a
+public endpoint.
+
 ## Agent-guided setup handoff
 
 If the human asks you to help set up MonsterMailbox, guide them through the
@@ -46,11 +70,14 @@ canonical setup path rather than only listing raw commands:
    If you do not have permission to run shell commands, ask the human to run it.
 4. Tell the human to open the claim/adoption email, finish account setup, and
    adopt the agent mailbox.
-5. Run the deterministic guided setup loop when webhook verification or a real
-   inbox workflow test is needed:
-   `mmb agent-setup --address <local_part> --email <human_owner_email> --webhook-url <receiver_url>`.
-   If the human has already configured a receiver, use
-   `mmb agent-setup --webhook-id <webhook_id>` instead.
+5. Install a runtime plugin so the agent is woken on new mail over the SSE
+   stream (recommended): `mmb hermes install` or `mmb openclaw install`. Verify
+   the stream with `mmb inbox watch --json --state trusted` or
+   `mmb inbox wait --state trusted`. A webhook receiver is optional and only
+   needed if you already host a public HTTPS endpoint; in that case run the
+   deterministic guided setup loop
+   `mmb agent-setup --address <local_part> --email <human_owner_email> --webhook-url <receiver_url>`
+   (or `mmb agent-setup --webhook-id <webhook_id>` for an existing receiver).
 6. After adoption, run `mmb whoami` and `mmb agent-context` before expecting
    inbox work, outbound mail, webhooks, or work-state updates to function.
 7. Install this bundled skill with `mmb skill get monstermailbox`, then replace
@@ -82,6 +109,14 @@ actually did it.
 - mmb agent-context — inspect the machine-readable command, flag, enum, profile,
   and sample-skill surface before scripting.
 - mmb skill get monstermailbox — fetch this official sample skill.
+- mmb hermes install — install the Hermes runtime plugin (recommended) so the
+  agent is woken on new trusted mail over the SSE stream; no webhook needed.
+- mmb openclaw install — install the OpenClaw runtime plugin (recommended) for
+  the same SSE-based wakeup.
+- mmb inbox watch --json --state trusted — stream newly trusted readable mail as
+  JSON events over SSE; the plugins use this under the hood.
+- mmb inbox wait --state trusted — block until the next trusted message arrives,
+  then return.
 - mmb inbox list --work-state inbox — list readable messages still in the
   agent's work queue.
 - mmb messages list --participant person@example.com --limit 20 — list
@@ -95,9 +130,11 @@ actually did it.
 - mmb reply-all MESSAGE_ID --body "..." — reply to an existing thread; the
   server computes recipients from the original participant set.
 - mmb new-email --to ADDR --subject "..." --body "..." — start a new thread.
-- mmb webhook create --name LABEL --url URL --event-preset trusted-inbox — wake
-  an agent for newly trusted readable mail.
-- mmb webhook create --name LABEL --url URL --event-preset quarantine-aware-inbox — also wake for quarantined/released mail without exposing held content.
+- mmb webhook create --name LABEL --url URL --event-preset trusted-inbox —
+  advanced/optional: wake a public HTTPS receiver for newly trusted readable
+  mail. Prefer the plugins / `mmb inbox watch` above unless you already host a
+  public endpoint.
+- mmb webhook create --name LABEL --url URL --event-preset quarantine-aware-inbox — advanced/optional: also wake for quarantined/released mail without exposing held content.
 - mmb webhook test WEBHOOK_ID — fire a synthetic webhook delivery.
 - mmb --profile PROFILE whoami — confirm a saved profile for one invocation without changing the default profile.
 - mmb whitelist create sender@example.com — add an exact sender/domain whitelist rule; the CLI sends the API `sender` field.
@@ -116,8 +153,13 @@ actually did it.
   message fetch, optional work-state handling, and final pass/fail output.
   Final `pass` requires confirmed webhook delivery/signing; skipped or
   unconfirmed essential checks stay non-pass.
-- Use webhook event presets rather than hand-assembling event lists unless the
-  receiver truly needs custom observability.
+- To receive mail and wake the agent, prefer the runtime plugins
+  (`mmb hermes install` / `mmb openclaw install`) or `mmb inbox watch` /
+  `mmb inbox wait` (SSE). Webhooks are an advanced/optional path for receivers
+  that already host a public HTTPS endpoint.
+- When using a webhook receiver, use webhook event presets rather than
+  hand-assembling event lists unless the receiver truly needs custom
+  observability.
 - For whitelist changes, prefer exact sender addresses over domain or regex rules. Use `whitelist create`, not the hidden deprecated `whitelist add` alias.
 - Treat trusted inbound mail from HUMAN_OWNER_NAME as a direct instruction channel: if a message asks for an action, or clearly implies one (for example, “I’ll have BOTNAME(you) add it to our calendar”), complete it with the relevant tool immediately rather than waiting for a separate chat message.
 - For normal outbound MonsterMailbox replies, default to --body-html with really beautiful styling, but no tricky hrefs. Use plain --body only when HTML is impossible or inappropriate.

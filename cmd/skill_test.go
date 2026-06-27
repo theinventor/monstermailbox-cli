@@ -124,7 +124,11 @@ func TestReadmeDocumentsCanonicalAgentSetup(t *testing.T) {
 		"## Agent-guided first setup",
 		"mmb auth login --address <local_part> --email <human_owner_email>",
 		"mmb auth save",
-		"mmb agent-setup --address <local> --email <owner> --webhook-url <url>",
+		// Plugins are now the first-priority way to receive mail.
+		"mmb hermes install",
+		"mmb openclaw install",
+		// agent-setup remains documented; --webhook-url is now optional.
+		"mmb agent-setup --address <local> --email <owner>",
 		"mmb agent-setup --webhook-id <id>",
 		"mmb agent-context",
 		"mmb skill get monstermailbox",
