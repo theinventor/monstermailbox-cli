@@ -16,9 +16,11 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -62,7 +64,18 @@ type Client struct {
 	BaseURL    string
 	APIKey     string
 	HTTPClient *http.Client
-	Version    string
+
+	// StreamHTTPClient is used for long-lived Server-Sent Events streams
+	// (GET /events). It deliberately has NO total request Timeout —
+	// http.Client.Timeout caps the ENTIRE request including body reads,
+	// so a 30s timeout would murder the SSE connection every 30 seconds
+	// (the bug behind "inbox watch never sees events"). Liveness for the
+	// stream is enforced by the caller via a context idle-watchdog reset
+	// on each event/heartbeat, plus the transport's dial/header timeouts
+	// below for connection-establishment failures.
+	StreamHTTPClient *http.Client
+
+	Version string
 
 	// Source describes where APIKey came from. Useful for `mmb auth status`
 	// and for clear errors that point users at `mmb auth login`. One of:
@@ -90,6 +103,19 @@ func New() *Client {
 func NewWithProfile(profile string) *Client {
 	c := &Client{
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		StreamHTTPClient: &http.Client{
+			// No total Timeout — see the field doc on Client. Connection
+			// establishment is still bounded so a dead host fails fast.
+			Timeout: 0,
+			Transport: &http.Transport{
+				Proxy:                 http.ProxyFromEnvironment,
+				DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 30 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				ForceAttemptHTTP2:     true,
+			},
+		},
 	}
 
 	// Explicit --profile: must exist or we fall through to nothing (the
@@ -224,4 +250,35 @@ func (c *Client) DoWithHeaders(method, path string, body any, query url.Values, 
 	}
 
 	return c.HTTPClient.Do(req)
+}
+
+// DoStream opens a long-lived streaming GET (Server-Sent Events) bound
+// to ctx, using StreamHTTPClient (no total timeout). Callers MUST drive
+// liveness themselves: run an idle watchdog that cancels ctx when no
+// bytes arrive for longer than the server's heartbeat interval, and
+// close resp.Body when done. `extra` carries request headers such as
+// `Last-Event-ID` for reconnect-replay. Auth + User-Agent are set the
+// same way as Do/DoWithHeaders.
+func (c *Client) DoStream(ctx context.Context, path string, extra map[string]string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build stream request: %w", err)
+	}
+
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("User-Agent", UserAgentPrefix+"/"+c.Version)
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", AuthScheme+" "+c.APIKey)
+	}
+	for k, v := range extra {
+		if v != "" {
+			req.Header.Set(k, v)
+		}
+	}
+
+	sc := c.StreamHTTPClient
+	if sc == nil {
+		sc = c.HTTPClient // defensive: a hand-built Client without the stream client
+	}
+	return sc.Do(req)
 }
