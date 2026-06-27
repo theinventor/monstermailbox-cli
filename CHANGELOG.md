@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Added `mmb openclaw install` — one-command install of the MonsterMailbox plugin
+  into an OpenClaw agent. Writes the plugin to
+  `<openclaw-home>/extensions/monstermailbox/`, links the openclaw SDK so its
+  import resolves, and patches `openclaw.json` (adds the plugin to
+  `plugins.load.paths` and enables `plugins.entries.monstermailbox`) while
+  preserving other keys and backing up the original. The agent then receives
+  inbound email over the SSE stream and replies via the `mmb` CLI — no webhook.
+  Supports `--home`, `--session-key`, `--state`, `--allowed-senders`, `--mmb-bin`,
+  `--dry-run`, and `--force`; idempotent on re-run.
 - Fixed `mmb inbox watch` / `mmb inbox wait` silently dropping events. The
   shared HTTP client's 30s total timeout was killing the long-lived `/events`
   SSE stream every 30 seconds; combined with the server's live-only stream this
