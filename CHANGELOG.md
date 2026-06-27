@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reframed the README and bundled skill to lead with `mmb hermes install` /
+  `mmb openclaw install` (SSE) for receiving mail; webhooks demoted to
+  advanced/optional.
 - Added `mmb hermes install` — one-command install of the MonsterMailbox platform
   plugin into a Hermes agent. Writes the plugin to
   `<hermes-home>/plugins/monstermailbox/` and patches `config.yaml`
