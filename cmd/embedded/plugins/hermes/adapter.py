@@ -157,7 +157,8 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
             return
         self._seen.add(msg_id)
 
-        thread = await self._mmb_json("msg", "get", msg_id, "--peek", "--json")
+        # `mmb msg get` emits JSON with --peek; there is no --json flag.
+        thread = await self._mmb_json("msg", "get", msg_id, "--peek")
         thread = thread or {}
         sender = str((thread.get("from") or {}).get("email") or data.get("from") or "").lower()
         if self._allowed and sender not in self._allowed:
