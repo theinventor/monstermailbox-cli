@@ -113,6 +113,26 @@ func TestHermesInstall_WritesPluginAndPatches(t *testing.T) {
 	}
 }
 
+// Guard: `mmb msg get` has no --json flag (it emits JSON with --peek). A stray
+// --json there makes the adapter fail to fetch the message. Keep both embedded
+// adapters off it.
+func TestEmbeddedAdaptersDoNotPassJsonToMsgGet(t *testing.T) {
+	hermes, err := hermesPluginFS.ReadFile(hermesPluginEmbedRoot + "/adapter.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(hermes), `"get", msg_id, "--peek", "--json"`) {
+		t.Error("hermes adapter passes invalid --json to `mmb msg get`")
+	}
+	oc, err := openclawPluginFS.ReadFile(openclawPluginEmbedRoot + "/index.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(oc), `"get", String(id), "--peek", "--json"`) {
+		t.Error("openclaw adapter passes invalid --json to `mmb msg get`")
+	}
+}
+
 func toStrings(v any) []string {
 	var out []string
 	if s, ok := v.([]any); ok {

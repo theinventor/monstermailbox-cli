@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed both packaged adapters calling `mmb msg get <id> --peek --json`; `msg get` has no `--json` flag (it emits JSON with `--peek`), so the adapter failed to fetch the message even after receiving an event. Removed the invalid flag (Hermes + OpenClaw).
 - Fixed the packaged Hermes plugin adapter for real gateways (found running it
   under Hermes): `connect()`/`disconnect()` now accept lifecycle kwargs (e.g.
   `is_reconnect`); mmb is resolved via MMB_BIN > installer-recorded absolute

@@ -52,7 +52,8 @@ export default definePluginEntry({
     }
 
     async function handle(id) {
-      const thread = await mmbJson(["msg", "get", String(id), "--peek", "--json"]);
+      // `mmb msg get` emits JSON with --peek; there is no --json flag.
+      const thread = await mmbJson(["msg", "get", String(id), "--peek"]);
       const sender = String(thread?.from?.email ?? thread?.from ?? "").toLowerCase();
       if (allowed.size && !allowed.has(sender)) {
         api.log?.info?.(`MonsterMailbox: sender ${sender} not allow-listed; skipping ${id}`);
