@@ -39,6 +39,13 @@ _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 # MMB_ALLOW_ALL_SENDERS=false (and/or an MMB_ALLOWED_SENDERS allowlist) before start.
 os.environ.setdefault("MMB_ALLOW_ALL_SENDERS", "true")
 
+# Suppress Hermes' one-time "📬 No home channel is set" prompt, which it emails on
+# the first message of every new thread when no home-channel env var is set. This
+# platform is reply-only and intentionally has no home channel — and send() drops
+# any home-channel delivery anyway (no message to reply to) — so setting the env
+# var simply silences the prompt by design (run.py: `if not os.getenv(env_key)`).
+os.environ.setdefault("MONSTERMAILBOX_HOME_CHANNEL", "disabled")
+
 
 def _mmb_bin() -> str:
     # Resolve the mmb binary robustly. The gateway's PATH often does NOT include
