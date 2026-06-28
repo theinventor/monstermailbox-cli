@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Removed the content-based status-notice filter from the Hermes adapter entirely. With the platform on the minimal display tier (above), Hermes no longer produces non-reply surfaces, so the brittle emoji/phrase matching is unnecessary. `send()` now just emails the agent's real reply (with an empty-body guard).
+
 - **By-design fix for status/heartbeat leaks** (replaces relying on a content filter): `mmb hermes install` now registers the `monstermailbox` platform at Hermes's minimal/non-interactive display tier via `display.platforms.monstermailbox` (long_running_notifications, interim_assistant_messages, busy_ack_detail, streaming = off; tool_progress = off) — the same tier Hermes uses for its built-in email/sms/webhook platforms. Our platform is minted dynamically, so without this Hermes fell back to the verbose global defaults and emitted "⏳ Working…" heartbeats, tool progress, and interim chatter through `send()` (i.e. as emails). Now Hermes never generates a non-reply surface for this platform at the source, so only the agent's actual reply is emailed. The status-notice content filter stays as a thin backstop.
 
 - Hermes plugin now filters the streaming **progress spinner** (e.g. `⏳ Working — 3 min — iteration 23/90, receiving stream response`) so a turn interrupted mid-stream emails nothing instead of leaking a progress line as the reply. Added `⏳`/`⌛` to the status-notice prefixes and `receiving stream response` to the phrase filter.

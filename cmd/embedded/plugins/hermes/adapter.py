@@ -87,41 +87,11 @@ def check_monstermailbox_requirements() -> bool:
         return False
 
 
-# Hermes delivers gateway status/lifecycle notices over the active channel
-# (context-length auto-raise, provider/compression warnings, "gateway shutting
-# down", pairing prompts, "no home channel"). Over email those are noise — only
-# the agent's REAL reply should be sent. These markers identify such notices so
-# send() drops them instead of emailing them.
-# Leading glyphs Hermes uses for non-reply status/progress lines. ⏳/⌛ are the
-# streaming progress spinner ("⏳ Working — 3 min — iteration 23/90, …"); a real
-# email reply never starts with one of these, so prefix-matching is safe.
-_STATUS_NOTICE_PREFIXES = ("ℹ", "⚠️", "⚠", "💀", "📝", "🔄", "⏳", "⌛")
-_STATUS_NOTICE_PHRASES = (
-    "auto-compaction was raised",
-    "caps context at",
-    "no response from provider",
-    "gateway shutting down",
-    "your current task will be interrupted",
-    "compression summary failed",
-    "compression aborted",
-    "api call failed (attempt",
-    "codex backend",
-    "i don't recognize you",
-    "pairing code",
-    "no home channel",
-    # streaming/progress heartbeat that leaks when a turn is interrupted mid-stream
-    "receiving stream response",
-)
-
-
-def _is_status_notice(content) -> bool:
-    if not content or not str(content).strip():
-        return True
-    t = str(content).strip()
-    if t.startswith(_STATUS_NOTICE_PREFIXES):
-        return True
-    low = t.lower()
-    return any(p in low for p in _STATUS_NOTICE_PHRASES)
+# Non-reply surfaces (the "⏳ Working…" heartbeat, tool progress, interim
+# chatter, lifecycle notices) are suppressed BY DESIGN, not by content matching:
+# `mmb hermes install` registers this platform at Hermes's minimal/non-interactive
+# display tier (display.platforms.monstermailbox) so the gateway never generates
+# them for us. send() therefore just emails the agent's real reply.
 
 
 class MonsterMailboxAdapter(BasePlatformAdapter):
@@ -257,11 +227,11 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
-        # Only ever email a REAL agent reply — never Hermes gateway status/notice
-        # chatter (context-length, compression/provider warnings, shutdown, etc.).
-        if _is_status_notice(content):
-            self.logger.info("MonsterMailbox: suppressed gateway status notice (not emailed)")
-            return SendResult(success=True, message_id="suppressed-notice")
+        # Don't email an empty body. Status/progress surfaces are suppressed at
+        # the source by the minimal display tier (see install), so anything that
+        # reaches here with content is a real reply.
+        if not content or not str(content).strip():
+            return SendResult(success=True, message_id="suppressed-empty")
         msg_id = (metadata or {}).get("message_id") or self._reply_target.get(chat_id)
         if not msg_id:
             return SendResult(success=False, error="no MonsterMailbox message to reply to")
