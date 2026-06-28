@@ -31,6 +31,14 @@ from gateway.config import Platform
 
 _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Turn OFF Hermes' per-sender pairing/authz for this platform. The MonsterMailbox
+# server already gates inbound by trust-state (we only ingest --state trusted), so
+# the gateway's pairing handshake is redundant and would email pairing codes to
+# unknown senders instead of processing their mail. Authorizing all senders for
+# THIS platform makes the server's trust-state the single gate. Override by setting
+# MMB_ALLOW_ALL_SENDERS=false (and/or an MMB_ALLOWED_SENDERS allowlist) before start.
+os.environ.setdefault("MMB_ALLOW_ALL_SENDERS", "true")
+
 
 def _mmb_bin() -> str:
     # Resolve the mmb binary robustly. The gateway's PATH often does NOT include
@@ -50,12 +58,30 @@ def _mmb_bin() -> str:
     return shutil.which("mmb") or "mmb"
 
 
+def _mmb_env() -> dict:
+    # mmb resolves its file-backed profile under $HOME. A supervised gateway may
+    # run with a different HOME than the install/interactive shell (→ mmb 401).
+    # Use MMB_HOME, else the HOME the installer recorded next to this plugin
+    # (mmb_home), else the current environment unchanged.
+    env = dict(os.environ)
+    home = os.getenv("MMB_HOME")
+    if not home:
+        try:
+            with open(os.path.join(_PLUGIN_DIR, "mmb_home")) as f:
+                home = f.read().strip()
+        except OSError:
+            home = ""
+    if home:
+        env["HOME"] = home
+    return env
+
+
 def check_monstermailbox_requirements() -> bool:
     """Enabled only when the mmb CLI is present AND authenticated."""
     import subprocess
 
     try:
-        r = subprocess.run([_mmb_bin(), "whoami"], capture_output=True, timeout=10)
+        r = subprocess.run([_mmb_bin(), "whoami"], capture_output=True, timeout=10, env=_mmb_env())
         return r.returncode == 0
     except Exception:
         return False
@@ -129,6 +155,7 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
                     _mmb_bin(), "inbox", "wait", "--state", "trusted", "--timeout", "120s",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
+                    env=_mmb_env(),
                 )
                 out, _ = await proc.communicate()
                 backoff = 1.0
@@ -214,6 +241,7 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         proc = await asyncio.create_subprocess_exec(
             _mmb_bin(), *args,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env=_mmb_env(),
         )
         out, err = await proc.communicate()
         if proc.returncode != 0:
@@ -232,6 +260,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None,
         _mmb_bin(), "new-email", "--to", chat_id, "--subject", "Hermes Agent",
         "--body-html", message,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        env=_mmb_env(),
     )
     out, err = await proc.communicate()
     if proc.returncode != 0:
