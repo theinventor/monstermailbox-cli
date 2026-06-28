@@ -92,6 +92,12 @@ failure the plain webhook channel has.`,
 				fmt.Fprintf(out, "⚠ could not record mmb path; ensure mmb is on the gateway PATH or set MMB_BIN\n")
 			}
 
+			// Record HOME so gateway subprocesses find the mmb profile even when
+			// the supervised gateway runs with a different HOME than this shell.
+			if hd := recordMmbHome(destDir); hd != "" {
+				fmt.Fprintf(out, "✓ recorded mmb HOME: %s\n", hd)
+			}
+
 			if err := patchHermesConfig(cfgPath); err != nil {
 				return fmt.Errorf("patch config.yaml: %w", err)
 			}
@@ -125,6 +131,20 @@ func recordMmbPath(destDir string) string {
 		return ""
 	}
 	return exe
+}
+
+// recordMmbHome writes the install-time HOME to <destDir>/mmb_home so the adapter
+// can run mmb subprocesses with the HOME where the mmb profile lives (a supervised
+// gateway often has a different HOME). Returns the path written, or "" on failure.
+func recordMmbHome(destDir string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	if werr := os.WriteFile(filepath.Join(destDir, "mmb_home"), []byte(home+"\n"), 0o644); werr != nil {
+		return ""
+	}
+	return home
 }
 
 func resolveHermesHome(override string) (string, error) {
