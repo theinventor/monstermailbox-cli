@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Hermes plugin now filters the streaming **progress spinner** (e.g. `⏳ Working — 3 min — iteration 23/90, receiving stream response`) so a turn interrupted mid-stream emails nothing instead of leaking a progress line as the reply. Added `⏳`/`⌛` to the status-notice prefixes and `receiving stream response` to the phrase filter.
+
 - `mmb hermes install` / `mmb openclaw install` now also install a **backstop cron**
   that catches inbound mail the realtime watcher missed (gateway crash, restart,
   or a turn that died mid-handling). The realtime plugin stays the fast primary

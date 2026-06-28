@@ -92,7 +92,10 @@ def check_monstermailbox_requirements() -> bool:
 # down", pairing prompts, "no home channel"). Over email those are noise — only
 # the agent's REAL reply should be sent. These markers identify such notices so
 # send() drops them instead of emailing them.
-_STATUS_NOTICE_PREFIXES = ("ℹ", "⚠️", "⚠", "💀", "📝", "🔄")
+# Leading glyphs Hermes uses for non-reply status/progress lines. ⏳/⌛ are the
+# streaming progress spinner ("⏳ Working — 3 min — iteration 23/90, …"); a real
+# email reply never starts with one of these, so prefix-matching is safe.
+_STATUS_NOTICE_PREFIXES = ("ℹ", "⚠️", "⚠", "💀", "📝", "🔄", "⏳", "⌛")
 _STATUS_NOTICE_PHRASES = (
     "auto-compaction was raised",
     "caps context at",
@@ -106,6 +109,8 @@ _STATUS_NOTICE_PHRASES = (
     "i don't recognize you",
     "pairing code",
     "no home channel",
+    # streaming/progress heartbeat that leaks when a turn is interrupted mid-stream
+    "receiving stream response",
 )
 
 

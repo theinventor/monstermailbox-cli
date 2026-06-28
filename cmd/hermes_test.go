@@ -173,3 +173,20 @@ func TestHermesAdapterIsReplyOnly(t *testing.T) {
 		t.Error("adapter must NOT register cron_deliver_env_var= (no home/cron channel)")
 	}
 }
+
+// Guard: the adapter must filter Hermes streaming-progress lines (e.g.
+// "⏳ Working — 3 min — iteration 23/90, receiving stream response") so a turn
+// interrupted mid-stream never emails a progress spinner instead of a real reply.
+func TestHermesAdapterFiltersProgressSpinner(t *testing.T) {
+	b, err := hermesPluginFS.ReadFile(hermesPluginEmbedRoot + "/adapter.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "⏳") {
+		t.Error("adapter must treat the ⏳ progress spinner as a status notice")
+	}
+	if !strings.Contains(s, "receiving stream response") {
+		t.Error("adapter must filter the streaming-progress heartbeat phrase")
+	}
+}
