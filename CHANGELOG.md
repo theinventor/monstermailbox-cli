@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fixed the packaged Hermes plugin adapter for real gateways (found running it
+  under Hermes): `connect()`/`disconnect()` now accept lifecycle kwargs (e.g.
+  `is_reconnect`); mmb is resolved via MMB_BIN > installer-recorded absolute
+  path (`mmb_path`) > PATH > `mmb` so it no longer depends on the gateway's
+  PATH; the watcher now loops `mmb inbox wait` + inbox reconcile instead of a
+  long-lived `mmb inbox watch` (self-heals after `mmb update` and survives hosts
+  where a long-lived watch goes silent); and a duplicate-watcher guard on
+  reconnect. `mmb hermes install` records the absolute mmb path next to the plugin.
 - Reframed the README and bundled skill to lead with `mmb hermes install` /
   `mmb openclaw install` (SSE) for receiving mail; webhooks demoted to
   advanced/optional.

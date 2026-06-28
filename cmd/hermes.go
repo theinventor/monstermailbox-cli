@@ -68,6 +68,7 @@ failure the plain webhook channel has.`,
 			if dryRun {
 				fmt.Fprintf(out, "DRY RUN — would:\n")
 				fmt.Fprintf(out, "  • write plugin files to %s\n", destDir)
+				fmt.Fprintf(out, "  • record the mmb path in %s/mmb_path\n", destDir)
 				fmt.Fprintf(out, "  • patch %s: plugins.enabled += monstermailbox\n", cfgPath)
 				fmt.Fprintf(out, "  • patch %s: platform_toolsets.monstermailbox: [hermes-cli]\n", cfgPath)
 				fmt.Fprintf(out, "  • patch %s: command_allowlist += \"mmb *\"\n", cfgPath)
@@ -82,6 +83,14 @@ failure the plain webhook channel has.`,
 				return fmt.Errorf("write plugin files: %w", err)
 			}
 			fmt.Fprintf(out, "✓ wrote plugin to %s\n", destDir)
+
+			// Record the absolute mmb path so the adapter doesn't depend on the
+			// gateway's PATH (which often omits the mmb install dir).
+			if mp := recordMmbPath(destDir); mp != "" {
+				fmt.Fprintf(out, "✓ recorded mmb path: %s\n", mp)
+			} else {
+				fmt.Fprintf(out, "⚠ could not record mmb path; ensure mmb is on the gateway PATH or set MMB_BIN\n")
+			}
 
 			if err := patchHermesConfig(cfgPath); err != nil {
 				return fmt.Errorf("patch config.yaml: %w", err)
@@ -99,6 +108,23 @@ failure the plain webhook channel has.`,
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "print what would happen, make no changes")
 	c.Flags().BoolVar(&force, "force", false, "overwrite an existing plugin directory")
 	return c
+}
+
+// recordMmbPath writes the absolute path of the running mmb binary to
+// <destDir>/mmb_path so the plugin adapter can find mmb regardless of the
+// gateway process's PATH. Returns the path written, or "" on failure.
+func recordMmbPath(destDir string) string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+		exe = resolved
+	}
+	if werr := os.WriteFile(filepath.Join(destDir, "mmb_path"), []byte(exe+"\n"), 0o644); werr != nil {
+		return ""
+	}
+	return exe
 }
 
 func resolveHermesHome(override string) (string, error) {
