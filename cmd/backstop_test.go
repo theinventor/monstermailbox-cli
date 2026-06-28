@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -206,7 +207,8 @@ func TestInstallHermesBackstop_WritesGateScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gate script not written: %v", err)
 	}
-	if info.Mode().Perm()&0o100 == 0 {
+	// Windows has no POSIX exec bit; Go doesn't set it there.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o100 == 0 {
 		t.Error("gate script must be executable")
 	}
 	body, _ := os.ReadFile(gate)
