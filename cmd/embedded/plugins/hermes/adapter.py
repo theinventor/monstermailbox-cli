@@ -22,14 +22,31 @@ failure the plain webhook channel has.
 import asyncio
 import json
 import os
+import shutil
 from typing import Optional
 
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.config import Platform
 
+_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def _mmb_bin() -> str:
-    return os.getenv("MMB_BIN", "mmb")
+    # Resolve the mmb binary robustly. The gateway's PATH often does NOT include
+    # the mmb install dir, so don't rely on a bare "mmb": prefer an explicit
+    # MMB_BIN, then the absolute path the installer recorded next to this plugin
+    # (mmb_path), then a PATH lookup, then bare "mmb".
+    env = os.getenv("MMB_BIN")
+    if env:
+        return env
+    try:
+        with open(os.path.join(_PLUGIN_DIR, "mmb_path")) as f:
+            recorded = f.read().strip()
+        if recorded and os.path.exists(recorded):
+            return recorded
+    except OSError:
+        pass
+    return shutil.which("mmb") or "mmb"
 
 
 def check_monstermailbox_requirements() -> bool:
@@ -56,12 +73,15 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         allow = os.getenv("MMB_ALLOWED_SENDERS", "").strip()
         self._allowed = {a.strip().lower() for a in allow.split(",") if a.strip()}
 
-    async def connect(self) -> bool:
+    async def connect(self, **kwargs) -> bool:
+        # Hermes passes lifecycle kwargs (e.g. is_reconnect) — accept and ignore.
         self._stop.clear()
-        self._watch_task = asyncio.create_task(self._watch_loop())
+        if self._watch_task and not self._watch_task.done():
+            return True  # already running; never spawn a duplicate watcher
+        self._watch_task = asyncio.create_task(self._poll_loop())
         return True
 
-    async def disconnect(self):
+    async def disconnect(self, **kwargs):
         self._stop.set()
         if self._watch_task:
             self._watch_task.cancel()
@@ -70,37 +90,62 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
 
-    async def _watch_loop(self):
+    async def _poll_loop(self):
+        # Drive inbound via repeated `mmb inbox wait` (one event per call) plus an
+        # inbox reconcile each iteration. This is robust where a long-lived
+        # `mmb inbox watch` goes silent, and it self-heals after `mmb update`:
+        # each iteration spawns a fresh process on the CURRENT binary instead of
+        # holding a replaced/deleted executable open.
         backoff = 1.0
         while not self._stop.is_set():
-            proc = None
+            # 1) Reconcile: pick up anything already queued (covers the gap
+            #    between successive wait calls). _on_inbox_new dedups via _seen.
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    _mmb_bin(), "inbox", "watch", "--json", "--state", "trusted",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
+                listing = await self._mmb_json(
+                    "inbox", "list", "--work-state", "inbox", "--state", "trusted", "--peek"
                 )
-                backoff = 1.0
-                assert proc.stdout is not None
-                async for raw in proc.stdout:
+                for m in (listing or {}).get("messages", []):
                     if self._stop.is_set():
                         break
-                    line = raw.decode("utf-8", "replace").strip()
-                    if not line:
-                        continue
-                    try:
-                        evt = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if evt.get("event") == "inbox.new":
-                        await self._on_inbox_new(evt.get("data") or {})
+                    await self._on_inbox_new({"message_id": m.get("id")})
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.logger.warning("MonsterMailbox watch error: %s", e)
+                self.logger.warning("MonsterMailbox reconcile error: %s", e)
+
+            if self._stop.is_set():
+                break
+
+            # 2) Block for the next event with `wait` (one event per invocation).
+            proc = None
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    _mmb_bin(), "inbox", "wait", "--state", "trusted", "--timeout", "120s",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                out, _ = await proc.communicate()
+                backoff = 1.0
+                if self._stop.is_set():
+                    break
+                line = out.decode("utf-8", "replace").strip()
+                if line:
+                    try:
+                        evt = json.loads(line.splitlines()[-1])
+                        if evt.get("event") == "inbox.new":
+                            await self._on_inbox_new(evt.get("data") or {})
+                    except json.JSONDecodeError:
+                        pass
+                # wait exits non-zero on timeout with no event — just loop.
+                continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.logger.warning("MonsterMailbox wait error: %s", e)
             finally:
                 if proc and proc.returncode is None:
                     proc.terminate()
+            # Reached only on exception: back off before retrying.
             if self._stop.is_set():
                 break
             await asyncio.sleep(backoff)

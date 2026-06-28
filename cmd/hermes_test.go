@@ -101,6 +101,16 @@ func TestHermesInstall_WritesPluginAndPatches(t *testing.T) {
 			t.Errorf("expected plugin file %s: %v", f, err)
 		}
 	}
+	// The installer records the absolute mmb path so the adapter doesn't depend
+	// on the gateway's PATH.
+	mp := filepath.Join(dir, "plugins", "monstermailbox", "mmb_path")
+	b, err := os.ReadFile(mp)
+	if err != nil {
+		t.Fatalf("expected mmb_path to be recorded: %v", err)
+	}
+	if p := strings.TrimSpace(string(b)); p == "" || !filepath.IsAbs(p) {
+		t.Errorf("mmb_path should hold an absolute path; got %q", string(b))
+	}
 }
 
 func toStrings(v any) []string {
