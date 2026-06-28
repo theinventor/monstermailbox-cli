@@ -36,7 +36,8 @@ via the mmb CLI — no webhook, no public endpoint, no signing secret.`,
 
 func newHermesInstallCmd() *cobra.Command {
 	var home string
-	var dryRun, force bool
+	var dryRun, force, noBackstop bool
+	var backstopInterval string
 
 	c := &cobra.Command{
 		Use:   "install",
@@ -65,6 +66,10 @@ failure the plain webhook channel has.`,
 			}
 			destDir := filepath.Join(hHome, "plugins", "monstermailbox")
 
+			if _, err := parseBackstopInterval(backstopInterval); err != nil && !noBackstop {
+				return exitcode.Wrap(exitcode.Usage, err)
+			}
+
 			if dryRun {
 				fmt.Fprintf(out, "DRY RUN — would:\n")
 				fmt.Fprintf(out, "  • write plugin files to %s\n", destDir)
@@ -72,6 +77,12 @@ failure the plain webhook channel has.`,
 				fmt.Fprintf(out, "  • patch %s: plugins.enabled += monstermailbox\n", cfgPath)
 				fmt.Fprintf(out, "  • patch %s: platform_toolsets.monstermailbox: [hermes-cli]\n", cfgPath)
 				fmt.Fprintf(out, "  • patch %s: command_allowlist += \"mmb *\"\n", cfgPath)
+				if noBackstop {
+					fmt.Fprintf(out, "  • (skipping backstop cron: --no-backstop)\n")
+				} else {
+					fmt.Fprintf(out, "  • write gate script %s and create/update the %q cron (every %s, deliver local)\n",
+						filepath.Join(hHome, "scripts", gateScriptName), hermesBackstopJobName, backstopInterval)
+				}
 				return nil
 			}
 
@@ -86,22 +97,32 @@ failure the plain webhook channel has.`,
 
 			// Record the absolute mmb path so the adapter doesn't depend on the
 			// gateway's PATH (which often omits the mmb install dir).
-			if mp := recordMmbPath(destDir); mp != "" {
-				fmt.Fprintf(out, "✓ recorded mmb path: %s\n", mp)
+			mmbBin := recordMmbPath(destDir)
+			if mmbBin != "" {
+				fmt.Fprintf(out, "✓ recorded mmb path: %s\n", mmbBin)
 			} else {
 				fmt.Fprintf(out, "⚠ could not record mmb path; ensure mmb is on the gateway PATH or set MMB_BIN\n")
 			}
 
 			// Record HOME so gateway subprocesses find the mmb profile even when
 			// the supervised gateway runs with a different HOME than this shell.
-			if hd := recordMmbHome(destDir); hd != "" {
-				fmt.Fprintf(out, "✓ recorded mmb HOME: %s\n", hd)
+			mmbHome := recordMmbHome(destDir)
+			if mmbHome != "" {
+				fmt.Fprintf(out, "✓ recorded mmb HOME: %s\n", mmbHome)
 			}
 
 			if err := patchHermesConfig(cfgPath); err != nil {
 				return fmt.Errorf("patch config.yaml: %w", err)
 			}
 			fmt.Fprintf(out, "✓ patched %s (plugins.enabled + platform_toolsets + command_allowlist; backup at %s.bak)\n", cfgPath, cfgPath)
+
+			// Install the backstop cron (catches mail the realtime watcher misses).
+			if !noBackstop {
+				iv, _ := parseBackstopInterval(backstopInterval) // validated above
+				if err := installHermesBackstop(out, hHome, mmbBin, mmbHome, iv); err != nil {
+					fmt.Fprintf(out, "⚠ backstop cron not fully installed: %v\n", err)
+				}
+			}
 
 			fmt.Fprintf(out, "\nNext steps:\n")
 			fmt.Fprintf(out, "  1. Ensure the mmb CLI is authenticated: mmb whoami\n")
@@ -113,6 +134,8 @@ failure the plain webhook channel has.`,
 	c.Flags().StringVar(&home, "home", "", "Hermes home dir (default: $HERMES_HOME or ~/.hermes)")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "print what would happen, make no changes")
 	c.Flags().BoolVar(&force, "force", false, "overwrite an existing plugin directory")
+	c.Flags().StringVar(&backstopInterval, "backstop-interval", defaultBackstopInterval, "backstop cron interval (e.g. 15m, 30m, 1h)")
+	c.Flags().BoolVar(&noBackstop, "no-backstop", false, "do not install the backstop cron")
 	return c
 }
 

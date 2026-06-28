@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- `mmb hermes install` / `mmb openclaw install` now also install a **backstop cron**
+  that catches inbound mail the realtime watcher missed (gateway crash, restart,
+  or a turn that died mid-handling). The realtime plugin stays the fast primary
+  path; this is the safety net. A message is treated as unhandled iff it has no
+  final disposition — read/unread is irrelevant — so the backstop re-queues every
+  `work_state=inbox` message plus any `work_state=in_progress` older than 60 min
+  (claimed, then the turn died). Hermes uses a pre-run gate script that emits
+  `{"wakeAgent": false}` on an empty inbox (zero-token passes) and `deliver local`
+  (no chat noise); OpenClaw uses an isolated session per run with a `NO_REPLY`
+  sentinel. Both are idempotent by job name and configurable via
+  `--backstop-interval` (default 15m) / `--no-backstop`.
+
 - Hermes plugin is now reply-only: it no longer registers as a cron/home-delivery channel (which caused "no home channel" errors and routed proactive/system notices over email), and `send()` filters Hermes gateway status notices (context-length auto-raise, provider/compression warnings, shutdown, pairing) so ONLY the agent's real reply is emailed.
 - Turned OFF Hermes' per-sender pairing for the MonsterMailbox platform: the plugin now defaults `MMB_ALLOW_ALL_SENDERS=true` (the MMB server already gates inbound by trust-state), so unknown senders are processed instead of emailed pairing codes. Override with `MMB_ALLOW_ALL_SENDERS=false` / an `MMB_ALLOWED_SENDERS` allowlist.
 - Fixed Hermes adapter mmb 401 under a supervised gateway: mmb subprocesses now run with the recorded HOME (where the mmb profile lives), via `MMB_HOME` / an installer-recorded `mmb_home`.
