@@ -36,7 +36,8 @@ via the mmb CLI — no webhook, no public endpoint, no signing secret.`,
 
 func newOpenClawInstallCmd() *cobra.Command {
 	var home, sessionKey, state, allowed, mmbBin string
-	var dryRun, force bool
+	var dryRun, force, noBackstop bool
+	var backstopInterval string
 
 	c := &cobra.Command{
 		Use:   "install",
@@ -70,12 +71,22 @@ watcher, then verify with:  openclaw plugins inspect monstermailbox`,
 				pluginCfg["allowedSenders"] = s
 			}
 
+			if _, err := parseBackstopInterval(backstopInterval); err != nil && !noBackstop {
+				return exitcode.Wrap(exitcode.Usage, err)
+			}
+
 			if dryRun {
 				fmt.Fprintf(out, "DRY RUN — would:\n")
 				fmt.Fprintf(out, "  • write plugin files to %s\n", destDir)
 				fmt.Fprintf(out, "  • link openclaw SDK into %s/node_modules/openclaw\n", destDir)
 				fmt.Fprintf(out, "  • add %s to plugins.load.paths in %s\n", destDir, cfgPath)
 				fmt.Fprintf(out, "  • enable plugins.entries.monstermailbox with config %v\n", pluginCfg)
+				if noBackstop {
+					fmt.Fprintf(out, "  • (skipping backstop cron: --no-backstop)\n")
+				} else {
+					fmt.Fprintf(out, "  • add/update the %q cron in %s (every %s, isolated session)\n",
+						openClawBackstopJobName, filepath.Join(ocHome, "cron", "jobs.json"), backstopInterval)
+				}
 				return nil
 			}
 
@@ -97,6 +108,14 @@ watcher, then verify with:  openclaw plugins inspect monstermailbox`,
 			}
 			fmt.Fprintf(out, "✓ patched %s (load.paths + entries.monstermailbox enabled; backup at %s.bak)\n", cfgPath, cfgPath)
 
+			// Install the backstop cron (catches mail the realtime watcher misses).
+			if !noBackstop {
+				iv, _ := parseBackstopInterval(backstopInterval) // validated above
+				if err := installOpenClawBackstop(out, ocHome, mmbBin, iv); err != nil {
+					fmt.Fprintf(out, "⚠ backstop cron not installed: %v\n", err)
+				}
+			}
+
 			fmt.Fprintf(out, "\nNext steps:\n")
 			fmt.Fprintf(out, "  1. Ensure the mmb CLI is authenticated: mmb whoami\n")
 			fmt.Fprintf(out, "  2. Make sure the agent isn't on tools.profile messaging/minimal (needs exec).\n")
@@ -112,6 +131,8 @@ watcher, then verify with:  openclaw plugins inspect monstermailbox`,
 	c.Flags().StringVar(&mmbBin, "mmb-bin", "mmb", "path to the mmb binary the plugin shells out to")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "print what would happen, make no changes")
 	c.Flags().BoolVar(&force, "force", false, "overwrite an existing plugin directory")
+	c.Flags().StringVar(&backstopInterval, "backstop-interval", defaultBackstopInterval, "backstop cron interval (e.g. 15m, 30m, 1h)")
+	c.Flags().BoolVar(&noBackstop, "no-backstop", false, "do not install the backstop cron")
 	return c
 }
 
