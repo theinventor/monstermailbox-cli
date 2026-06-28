@@ -233,6 +233,15 @@ func patchHermesConfig(cfgPath string) error {
 	yamlSetMapValue(mmbDisplay, "busy_ack_detail", yamlBool(false))
 	yamlSetMapValue(mmbDisplay, "streaming", yamlBool(false))
 
+	// compression.codex_gpt55_autoraise: false — suppresses the one-time
+	// "ℹ Codex gpt-5.5 caps context at … auto-compaction was raised" notice that
+	// Hermes replays over status_callback (i.e. emails) for gpt-5.5 agents. There
+	// is no per-platform gate for that notice, only this feature toggle; disabling
+	// it also makes the agent compact a bit earlier, which is fine for these
+	// email agents (avoids the late-compaction wedge we hit on gpt-5.5).
+	compression := yamlGetOrCreateMap(root, "compression")
+	yamlSetMapValue(compression, "codex_gpt55_autoraise", yamlBool(false))
+
 	pretty, err := yaml.Marshal(&doc)
 	if err != nil {
 		return err

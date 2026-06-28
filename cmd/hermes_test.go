@@ -72,6 +72,13 @@ func TestPatchHermesConfig_AddsManagedKeysPreservingComments(t *testing.T) {
 	if mmb["busy_ack_detail"] != false || mmb["streaming"] != false {
 		t.Errorf("busy_ack_detail and streaming must be false; got %v / %v", mmb["busy_ack_detail"], mmb["streaming"])
 	}
+
+	// compression.codex_gpt55_autoraise off — suppresses the gpt-5.5 caps-context
+	// notice that has no per-platform gate.
+	comp := got["compression"].(map[string]any)
+	if comp["codex_gpt55_autoraise"] != false {
+		t.Errorf("compression.codex_gpt55_autoraise must be false; got %v", comp["codex_gpt55_autoraise"])
+	}
 }
 
 func TestPatchHermesConfig_Idempotent(t *testing.T) {
@@ -191,5 +198,10 @@ func TestHermesAdapterIsReplyOnly(t *testing.T) {
 	}
 	if strings.Contains(s, "_is_status_notice") || strings.Contains(s, "_STATUS_NOTICE_PHRASES") {
 		t.Error("content-based status filter must be gone — suppression is by display tier, not string matching")
+	}
+	// By-design suppression of the "📬 No home channel" prompt (set the env var
+	// Hermes checks, rather than filtering the notice text).
+	if !strings.Contains(s, "MONSTERMAILBOX_HOME_CHANNEL") {
+		t.Error("adapter must set MONSTERMAILBOX_HOME_CHANNEL to suppress the no-home-channel prompt by design")
 	}
 }
