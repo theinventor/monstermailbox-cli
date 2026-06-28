@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Hermes plugin is now reply-only: it no longer registers as a cron/home-delivery channel (which caused "no home channel" errors and routed proactive/system notices over email), and `send()` filters Hermes gateway status notices (context-length auto-raise, provider/compression warnings, shutdown, pairing) so ONLY the agent's real reply is emailed.
 - Turned OFF Hermes' per-sender pairing for the MonsterMailbox platform: the plugin now defaults `MMB_ALLOW_ALL_SENDERS=true` (the MMB server already gates inbound by trust-state), so unknown senders are processed instead of emailed pairing codes. Override with `MMB_ALLOW_ALL_SENDERS=false` / an `MMB_ALLOWED_SENDERS` allowlist.
 - Fixed Hermes adapter mmb 401 under a supervised gateway: mmb subprocesses now run with the recorded HOME (where the mmb profile lives), via `MMB_HOME` / an installer-recorded `mmb_home`.
 - Fixed both packaged adapters calling `mmb msg get <id> --peek --json`; `msg get` has no `--json` flag (it emits JSON with `--peek`), so the adapter failed to fetch the message even after receiving an event. Removed the invalid flag (Hermes + OpenClaw).

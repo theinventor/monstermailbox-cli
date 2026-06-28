@@ -156,3 +156,20 @@ func countOf(s []string, v string) int {
 	}
 	return n
 }
+
+// Guard: the Hermes adapter is reply-only — it filters gateway status notices in
+// send() and does NOT register as a cron/home-delivery channel (which caused
+// "no home channel" errors and routed notices over email).
+func TestHermesAdapterIsReplyOnly(t *testing.T) {
+	b, err := hermesPluginFS.ReadFile(hermesPluginEmbedRoot + "/adapter.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "_is_status_notice") {
+		t.Error("adapter must filter gateway status notices in send()")
+	}
+	if strings.Contains(s, "cron_deliver_env_var=") {
+		t.Error("adapter must NOT register cron_deliver_env_var= (no home/cron channel)")
+	}
+}

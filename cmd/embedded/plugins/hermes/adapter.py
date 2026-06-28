@@ -87,6 +87,38 @@ def check_monstermailbox_requirements() -> bool:
         return False
 
 
+# Hermes delivers gateway status/lifecycle notices over the active channel
+# (context-length auto-raise, provider/compression warnings, "gateway shutting
+# down", pairing prompts, "no home channel"). Over email those are noise — only
+# the agent's REAL reply should be sent. These markers identify such notices so
+# send() drops them instead of emailing them.
+_STATUS_NOTICE_PREFIXES = ("ℹ", "⚠️", "⚠", "💀", "📝", "🔄")
+_STATUS_NOTICE_PHRASES = (
+    "auto-compaction was raised",
+    "caps context at",
+    "no response from provider",
+    "gateway shutting down",
+    "your current task will be interrupted",
+    "compression summary failed",
+    "compression aborted",
+    "api call failed (attempt",
+    "codex backend",
+    "i don't recognize you",
+    "pairing code",
+    "no home channel",
+)
+
+
+def _is_status_notice(content) -> bool:
+    if not content or not str(content).strip():
+        return True
+    t = str(content).strip()
+    if t.startswith(_STATUS_NOTICE_PREFIXES):
+        return True
+    low = t.lower()
+    return any(p in low for p in _STATUS_NOTICE_PHRASES)
+
+
 class MonsterMailboxAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 50_000
 
@@ -220,6 +252,11 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        # Only ever email a REAL agent reply — never Hermes gateway status/notice
+        # chatter (context-length, compression/provider warnings, shutdown, etc.).
+        if _is_status_notice(content):
+            self.logger.info("MonsterMailbox: suppressed gateway status notice (not emailed)")
+            return SendResult(success=True, message_id="suppressed-notice")
         msg_id = (metadata or {}).get("message_id") or self._reply_target.get(chat_id)
         if not msg_id:
             return SendResult(success=False, error="no MonsterMailbox message to reply to")
@@ -287,8 +324,11 @@ def register(ctx) -> None:
         install_hint="Requires the authenticated `mmb` CLI on PATH (run `mmb whoami`).",
         allowed_users_env="MMB_ALLOWED_SENDERS",
         allow_all_env="MMB_ALLOW_ALL_SENDERS",
-        cron_deliver_env_var="MMB_HOME_ADDRESS",
-        standalone_sender_fn=_standalone_send,
+        # Intentionally NOT a cron/home-delivery channel: this is a receive-and-
+        # reply platform only. Registering a cron_deliver_env_var made Hermes treat
+        # it as a home channel and error "no home channel" when no home address was
+        # set, and routed proactive/system notices over email. Omitting it keeps
+        # the platform reply-only.
         max_message_length=50_000,
         pii_safe=True,
         emoji="📬",
