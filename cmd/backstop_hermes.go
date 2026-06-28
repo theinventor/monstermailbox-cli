@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -91,7 +92,9 @@ PY
 `
 	r := strings.NewReplacer(
 		"__MMB_HOME__", mmbHome,
-		"__MMB_DIR__", filepath.Dir(mmbBin),
+		// path.Dir (not filepath.Dir): the gate is a POSIX bash script for the
+		// Linux gateway, so this must stay forward-slash even if built on Windows.
+		"__MMB_DIR__", path.Dir(mmbBin),
 		"__MMB_BIN__", mmbBin,
 		"__STALE__", fmt.Sprintf("%d", backstopStaleMinutes),
 	)
