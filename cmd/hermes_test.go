@@ -54,6 +54,24 @@ func TestPatchHermesConfig_AddsManagedKeysPreservingComments(t *testing.T) {
 	if got["model"] != "opus" {
 		t.Errorf("unrelated top-level key must be preserved; model=%v", got["model"])
 	}
+
+	// display.platforms.monstermailbox must register the minimal/non-interactive
+	// tier so Hermes never emails heartbeats/progress/interim chatter.
+	display := got["display"].(map[string]any)
+	plats := display["platforms"].(map[string]any)
+	mmb := plats["monstermailbox"].(map[string]any)
+	if mmb["long_running_notifications"] != false {
+		t.Errorf("long_running_notifications must be false (no ⏳ heartbeat); got %v", mmb["long_running_notifications"])
+	}
+	if mmb["interim_assistant_messages"] != false {
+		t.Errorf("interim_assistant_messages must be false; got %v", mmb["interim_assistant_messages"])
+	}
+	if mmb["tool_progress"] != "off" {
+		t.Errorf("tool_progress must be the string \"off\" (not bool false); got %#v", mmb["tool_progress"])
+	}
+	if mmb["busy_ack_detail"] != false || mmb["streaming"] != false {
+		t.Errorf("busy_ack_detail and streaming must be false; got %v / %v", mmb["busy_ack_detail"], mmb["streaming"])
+	}
 }
 
 func TestPatchHermesConfig_Idempotent(t *testing.T) {

@@ -77,6 +77,7 @@ failure the plain webhook channel has.`,
 				fmt.Fprintf(out, "  • patch %s: plugins.enabled += monstermailbox\n", cfgPath)
 				fmt.Fprintf(out, "  • patch %s: platform_toolsets.monstermailbox: [hermes-cli]\n", cfgPath)
 				fmt.Fprintf(out, "  • patch %s: command_allowlist += \"mmb *\"\n", cfgPath)
+				fmt.Fprintf(out, "  • patch %s: display.platforms.monstermailbox → minimal tier (no heartbeats/progress)\n", cfgPath)
 				if noBackstop {
 					fmt.Fprintf(out, "  • (skipping backstop cron: --no-backstop)\n")
 				} else {
@@ -215,6 +216,23 @@ func patchHermesConfig(cfgPath string) error {
 	allow := yamlGetOrCreateTopSeq(root, "command_allowlist")
 	yamlSeqAddString(allow, "mmb *")
 
+	// display.platforms.monstermailbox: minimal/non-interactive tier.
+	//
+	// This is THE fix for "⏳ Working…" heartbeats and tool-progress getting
+	// emailed instead of only real replies. Our platform is minted dynamically,
+	// so Hermes doesn't have a built-in display tier for it and falls back to the
+	// verbose global defaults (heartbeats/progress/interim chatter all ON). The
+	// built-in email/sms/webhook platforms use the minimal tier; we mirror it so
+	// Hermes never produces a non-reply surface for this platform at the source.
+	display := yamlGetOrCreateMap(root, "display")
+	platforms := yamlGetOrCreateMap(display, "platforms")
+	mmbDisplay := yamlGetOrCreateMap(platforms, "monstermailbox")
+	yamlSetMapValue(mmbDisplay, "tool_progress", yamlQuotedString("off")) // bare off parses as bool
+	yamlSetMapValue(mmbDisplay, "interim_assistant_messages", yamlBool(false))
+	yamlSetMapValue(mmbDisplay, "long_running_notifications", yamlBool(false)) // gates the ⏳ heartbeat
+	yamlSetMapValue(mmbDisplay, "busy_ack_detail", yamlBool(false))
+	yamlSetMapValue(mmbDisplay, "streaming", yamlBool(false))
+
 	pretty, err := yaml.Marshal(&doc)
 	if err != nil {
 		return err
@@ -287,6 +305,21 @@ func yamlSeqAddString(seq *yaml.Node, val string) {
 		}
 	}
 	seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: val})
+}
+
+// yamlBool returns a scalar boolean node.
+func yamlBool(b bool) *yaml.Node {
+	v := "false"
+	if b {
+		v = "true"
+	}
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: v}
+}
+
+// yamlQuotedString returns a double-quoted scalar string node — needed for
+// values like "off" that YAML would otherwise parse as a boolean.
+func yamlQuotedString(s string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s, Style: yaml.DoubleQuotedStyle}
 }
 
 func yamlStringSeq(vals ...string) *yaml.Node {
