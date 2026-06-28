@@ -21,6 +21,7 @@ failure the plain webhook channel has.
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 from typing import Optional
@@ -66,6 +67,11 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
     def __init__(self, config):
         # "monstermailbox" is minted dynamically via Platform._missing_().
         super().__init__(config, Platform("monstermailbox"))
+        # The base adapter doesn't reliably provide self.logger across Hermes
+        # versions; ensure one exists so warning/error paths don't AttributeError
+        # (which would silently kill the watcher loop).
+        if getattr(self, "logger", None) is None:
+            self.logger = logging.getLogger("monstermailbox")
         self._watch_task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         self._seen: set[str] = set()
