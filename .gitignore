@@ -22,3 +22,4 @@ coverage.txt
 # Go workspace files (per-developer, not part of the module)
 go.work
 go.work.sum
+__pycache__/
