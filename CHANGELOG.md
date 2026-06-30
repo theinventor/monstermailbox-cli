@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed `mmb hermes install` backstop-cron creation against **Hermes 0.17.0+**, which moved `hermes cron create`'s schedule + prompt from `--schedule`/`--prompt` flags to POSITIONAL args (the old flags were removed). The installer now probes `hermes cron create --help` and uses whichever form the installed Hermes accepts, so it works on both old and new gateways. (Caught by the new local upstream-compat runner.)
+
 - Suppressed two more Hermes one-time notices that were being emailed (caught by the new bot spam-regression smoke test), both BY DESIGN rather than by content filtering:
   - `📬 No home channel is set…` (run.py emits it on the first message of every new thread when no home-channel env var is set): the adapter now sets `MONSTERMAILBOX_HOME_CHANNEL` so Hermes skips the prompt; reply-only `send()` drops any home-channel delivery anyway.
   - `ℹ Codex gpt-5.5 caps context at … auto-compaction was raised`: `mmb hermes install` now sets `compression.codex_gpt55_autoraise: false` (the only gate for that status-callback notice; also makes gpt-5.5 agents compact a touch earlier, avoiding the late-compaction wedge).

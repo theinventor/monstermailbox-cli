@@ -54,11 +54,11 @@ func TestHermesScheduleExpr(t *testing.T) {
 }
 
 func TestHermesGateScript_PinsPathsAndCatchesUndispositioned(t *testing.T) {
-	s := hermesGateScript("/opt/data/home/.local/bin/mmb", "/opt/data/home")
+	s := hermesGateScript("/home/agent/.local/bin/mmb", "/home/agent")
 	for _, want := range []string{
-		"export HOME=/opt/data/home",
-		"MMB=/opt/data/home/.local/bin/mmb",
-		"export PATH=/opt/data/home/.local/bin:",
+		"export HOME=/home/agent",
+		"MMB=/home/agent/.local/bin/mmb",
+		"export PATH=/home/agent/.local/bin:",
 		"STALE_MINUTES=60",
 		"--work-state inbox",
 		"--work-state in_progress",
@@ -77,11 +77,11 @@ func TestOpenClawBackstopTurn_RewritesMmbBin(t *testing.T) {
 	if !strings.Contains(def, "mmb inbox list") {
 		t.Error("default turn should reference `mmb inbox list`")
 	}
-	custom := openClawBackstopTurn("/Users/troyfam/.local/bin/mmb")
-	if strings.Contains(custom, "mmb inbox list") && !strings.Contains(custom, "/Users/troyfam/.local/bin/mmb inbox list") {
+	custom := openClawBackstopTurn("/Users/agent/.local/bin/mmb")
+	if strings.Contains(custom, "mmb inbox list") && !strings.Contains(custom, "/Users/agent/.local/bin/mmb inbox list") {
 		t.Error("custom mmb bin should be substituted into the turn")
 	}
-	if !strings.Contains(custom, "/Users/troyfam/.local/bin/mmb inbox list") {
+	if !strings.Contains(custom, "/Users/agent/.local/bin/mmb inbox list") {
 		t.Error("expected absolute mmb path in turn commands")
 	}
 }
@@ -237,5 +237,29 @@ func TestHermesFindCronJobID(t *testing.T) {
 	os.WriteFile(p, []byte(`{"jobs":[]}`), 0o644)
 	if got := hermesFindCronJobID(dir, hermesBackstopJobName); got != "" {
 		t.Errorf("absent: got %q want empty", got)
+	}
+}
+
+// Guard: the backstop cron argv adapts to Hermes's cron CLI — `cron edit` always
+// uses --schedule/--prompt flags; `cron create` uses flags pre-0.17.0 but
+// POSITIONAL schedule+prompt from 0.17.0 on (which broke the old flag form).
+func TestHermesCronArgs_BothCreateForms(t *testing.T) {
+	// 0.17.0+: positional create, no --schedule/--prompt.
+	pos := strings.Join(hermesCronArgs("", "every 15m", "do the thing", false), " ")
+	if strings.Contains(pos, "--schedule") || strings.Contains(pos, "--prompt") {
+		t.Errorf("0.17.0 create must be positional, got: %s", pos)
+	}
+	if !strings.Contains(pos, "cron create every 15m do the thing") {
+		t.Errorf("0.17.0 create must pass schedule+prompt positionally, got: %s", pos)
+	}
+	// pre-0.17.0: flag create.
+	fl := strings.Join(hermesCronArgs("", "every 15m", "do the thing", true), " ")
+	if !strings.Contains(fl, "--schedule every 15m") || !strings.Contains(fl, "--prompt do the thing") {
+		t.Errorf("legacy create must use --schedule/--prompt flags, got: %s", fl)
+	}
+	// edit: flags on every version.
+	ed := strings.Join(hermesCronArgs("job123", "every 30m", "p", false), " ")
+	if !strings.Contains(ed, "cron edit job123") || !strings.Contains(ed, "--schedule every 30m") {
+		t.Errorf("edit must use --schedule flag, got: %s", ed)
 	}
 }
