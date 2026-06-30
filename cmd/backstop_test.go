@@ -54,11 +54,11 @@ func TestHermesScheduleExpr(t *testing.T) {
 }
 
 func TestHermesGateScript_PinsPathsAndCatchesUndispositioned(t *testing.T) {
-	s := hermesGateScript("/opt/data/home/.local/bin/mmb", "/opt/data/home")
+	s := hermesGateScript("/home/agent/.local/bin/mmb", "/home/agent")
 	for _, want := range []string{
-		"export HOME=/opt/data/home",
-		"MMB=/opt/data/home/.local/bin/mmb",
-		"export PATH=/opt/data/home/.local/bin:",
+		"export HOME=/home/agent",
+		"MMB=/home/agent/.local/bin/mmb",
+		"export PATH=/home/agent/.local/bin:",
 		"STALE_MINUTES=60",
 		"--work-state inbox",
 		"--work-state in_progress",
@@ -77,11 +77,11 @@ func TestOpenClawBackstopTurn_RewritesMmbBin(t *testing.T) {
 	if !strings.Contains(def, "mmb inbox list") {
 		t.Error("default turn should reference `mmb inbox list`")
 	}
-	custom := openClawBackstopTurn("/Users/troyfam/.local/bin/mmb")
-	if strings.Contains(custom, "mmb inbox list") && !strings.Contains(custom, "/Users/troyfam/.local/bin/mmb inbox list") {
+	custom := openClawBackstopTurn("/Users/agent/.local/bin/mmb")
+	if strings.Contains(custom, "mmb inbox list") && !strings.Contains(custom, "/Users/agent/.local/bin/mmb inbox list") {
 		t.Error("custom mmb bin should be substituted into the turn")
 	}
-	if !strings.Contains(custom, "/Users/troyfam/.local/bin/mmb inbox list") {
+	if !strings.Contains(custom, "/Users/agent/.local/bin/mmb inbox list") {
 		t.Error("expected absolute mmb path in turn commands")
 	}
 }
