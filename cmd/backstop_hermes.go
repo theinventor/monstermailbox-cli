@@ -141,14 +141,7 @@ func installHermesBackstop(w io.Writer, hHome, mmbBin, mmbHome string, interval 
 		return nil
 	}
 
-	var args []string
-	if existingID != "" {
-		args = []string{"cron", "edit", existingID,
-			"--schedule", schedule, "--deliver", "local", "--script", gateScriptName, "--prompt", prompt}
-	} else {
-		args = []string{"cron", "create", "--name", hermesBackstopJobName,
-			"--schedule", schedule, "--deliver", "local", "--script", gateScriptName, "--prompt", prompt}
-	}
+	args := hermesCronArgs(existingID, schedule, prompt, hermesCronCreateUsesFlags(hermesBin, hHome))
 	cmd := exec.Command(hermesBin, args...)
 	cmd.Env = append(os.Environ(), "HERMES_HOME="+hHome)
 	if outBytes, err := cmd.CombinedOutput(); err != nil {
@@ -161,6 +154,34 @@ func installHermesBackstop(w io.Writer, hHome, mmbBin, mmbHome string, interval 
 		fmt.Fprintf(w, "✓ created backstop cron %q (%s, deliver local)\n", hermesBackstopJobName, schedule)
 	}
 	return nil
+}
+
+// hermesCronArgs builds the `hermes cron` argv for creating/updating the backstop
+// job. `cron edit` keeps the --schedule/--prompt flags on every Hermes version;
+// `cron create` took schedule+prompt as flags pre-0.17.0 but POSITIONAL args from
+// 0.17.0 on (createUsesFlags selects which).
+func hermesCronArgs(existingID, schedule, prompt string, createUsesFlags bool) []string {
+	if existingID != "" {
+		return []string{"cron", "edit", existingID,
+			"--schedule", schedule, "--deliver", "local", "--script", gateScriptName, "--prompt", prompt}
+	}
+	if createUsesFlags {
+		return []string{"cron", "create", "--name", hermesBackstopJobName,
+			"--schedule", schedule, "--deliver", "local", "--script", gateScriptName, "--prompt", prompt}
+	}
+	return []string{"cron", "create", schedule, prompt,
+		"--name", hermesBackstopJobName, "--deliver", "local", "--script", gateScriptName}
+}
+
+// hermesCronCreateUsesFlags reports whether this `hermes` accepts the legacy
+// `cron create --schedule/--prompt` flags. Hermes 0.17.0 made schedule + prompt
+// POSITIONAL args of `cron create` and dropped those flags, so we probe --help
+// and adapt rather than break on whichever version the agent is running.
+func hermesCronCreateUsesFlags(hermesBin, hHome string) bool {
+	cmd := exec.Command(hermesBin, "cron", "create", "--help")
+	cmd.Env = append(os.Environ(), "HERMES_HOME="+hHome)
+	out, _ := cmd.CombinedOutput()
+	return strings.Contains(string(out), "--schedule")
 }
 
 // resolveHermesBin finds the hermes CLI: $MMB_HERMES_BIN, then PATH, then the

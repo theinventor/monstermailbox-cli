@@ -239,3 +239,27 @@ func TestHermesFindCronJobID(t *testing.T) {
 		t.Errorf("absent: got %q want empty", got)
 	}
 }
+
+// Guard: the backstop cron argv adapts to Hermes's cron CLI — `cron edit` always
+// uses --schedule/--prompt flags; `cron create` uses flags pre-0.17.0 but
+// POSITIONAL schedule+prompt from 0.17.0 on (which broke the old flag form).
+func TestHermesCronArgs_BothCreateForms(t *testing.T) {
+	// 0.17.0+: positional create, no --schedule/--prompt.
+	pos := strings.Join(hermesCronArgs("", "every 15m", "do the thing", false), " ")
+	if strings.Contains(pos, "--schedule") || strings.Contains(pos, "--prompt") {
+		t.Errorf("0.17.0 create must be positional, got: %s", pos)
+	}
+	if !strings.Contains(pos, "cron create every 15m do the thing") {
+		t.Errorf("0.17.0 create must pass schedule+prompt positionally, got: %s", pos)
+	}
+	// pre-0.17.0: flag create.
+	fl := strings.Join(hermesCronArgs("", "every 15m", "do the thing", true), " ")
+	if !strings.Contains(fl, "--schedule every 15m") || !strings.Contains(fl, "--prompt do the thing") {
+		t.Errorf("legacy create must use --schedule/--prompt flags, got: %s", fl)
+	}
+	// edit: flags on every version.
+	ed := strings.Join(hermesCronArgs("job123", "every 30m", "p", false), " ")
+	if !strings.Contains(ed, "cron edit job123") || !strings.Contains(ed, "--schedule every 30m") {
+		t.Errorf("edit must use --schedule flag, got: %s", ed)
+	}
+}
