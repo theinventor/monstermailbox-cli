@@ -84,6 +84,7 @@ failure the plain webhook channel has.`,
 					fmt.Fprintf(out, "  • write gate script %s and create/update the %q cron (every %s, deliver local)\n",
 						filepath.Join(hHome, "scripts", gateScriptName), hermesBackstopJobName, backstopInterval)
 				}
+				fmt.Fprintf(out, "  • disable any active inbox.new webhook (the plugin delivers inbound; both at once = duplicate replies)\n")
 				return nil
 			}
 
@@ -124,6 +125,10 @@ failure the plain webhook channel has.`,
 					fmt.Fprintf(out, "⚠ backstop cron not fully installed: %v\n", err)
 				}
 			}
+
+			// The plugin now owns inbound delivery; a leftover inbox.new webhook
+			// would double-deliver every email (duplicate replies). Pause it.
+			disableConflictingInboxWebhooks(out, newAPIClient())
 
 			fmt.Fprintf(out, "\nNext steps:\n")
 			fmt.Fprintf(out, "  1. Ensure the mmb CLI is authenticated: mmb whoami\n")

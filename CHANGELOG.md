@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- Fixed duplicate email replies caused by Hermes injecting **gateway-internal
+  synthetic events** into the MonsterMailbox session. When a turn spawns a
+  background process (e.g. a video render), Hermes later injects a
+  `[IMPORTANT: Background process … exited (exit code N)]` notice as a synthetic
+  `MessageEvent(internal=True)` down the same inbound path as real email — on a
+  reply-only email platform each one spun up a fresh turn and a real reply-all,
+  i.e. an extra email to the human with no actual inbound. The adapter now
+  overrides `handle_message` to drop `internal=True` events, so only genuine
+  inbound email produces a reply. (Startup-resume uses a separate dispatch path
+  and is unaffected; the backstop cron covers any inbox mail this might skip.)
+
+- `mmb hermes install` / `mmb openclaw install` now **disable any active
+  `inbox.new` webhook** on the agent during install. The SSE plugin owns inbound
+  delivery; a leftover webhook from a pre-plugin setup double-delivers every
+  email (once via the webhook, once via the plugin), which surfaced as duplicate
+  replies. Only `inbox.new` webhooks are touched — a webhook for other events
+  (e.g. `outbound.bounced`) is left alone — and it's reversible with
+  `mmb webhook update <id> --active=true`.
+
+- Hermes adapter now suppresses the background **memory/skill review notice**
+  (`💾 Self-improvement review: …`, `💾 Memory updated`, `💾 Skill '…' updated`)
+  from being emailed. Unlike the heartbeat/tool-progress surfaces — which the
+  minimal display tier gates at the source — this notice has no per-platform
+  setting: its only knob is the GLOBAL `display.memory_notifications`, which we
+  deliberately leave alone so it still shows in interactive channels (e.g.
+  Telegram). Hermes only marks the notice `non_conversational` for Discord, so no
+  metadata flag reaches an email platform to honor. The adapter therefore drops it
+  by the same anchored emitter-contract match Hermes's own Discord adapter uses,
+  scoped to this email platform only (Telegram is a different adapter, unaffected).
+  A real reply that merely mentions memory — or contains 💾 mid-sentence — is not
+  matched (patterns are anchored to a standalone status line).
+
 - Fixed `mmb hermes install` backstop-cron creation against **Hermes 0.17.0+**, which moved `hermes cron create`'s schedule + prompt from `--schedule`/`--prompt` flags to POSITIONAL args (the old flags were removed). The installer now probes `hermes cron create --help` and uses whichever form the installed Hermes accepts, so it works on both old and new gateways. (Caught by the new local upstream-compat runner.)
 
 - Suppressed two more Hermes one-time notices that were being emailed (caught by the new bot spam-regression smoke test), both BY DESIGN rather than by content filtering:

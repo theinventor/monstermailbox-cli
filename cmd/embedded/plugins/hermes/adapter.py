@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 from typing import Optional
 
@@ -94,11 +95,39 @@ def check_monstermailbox_requirements() -> bool:
         return False
 
 
-# Non-reply surfaces (the "⏳ Working…" heartbeat, tool progress, interim
+# Most non-reply surfaces (the "⏳ Working…" heartbeat, tool progress, interim
 # chatter, lifecycle notices) are suppressed BY DESIGN, not by content matching:
 # `mmb hermes install` registers this platform at Hermes's minimal/non-interactive
 # display tier (display.platforms.monstermailbox) so the gateway never generates
-# them for us. send() therefore just emails the agent's real reply.
+# them for us.
+#
+# The ONE exception is the background memory/skill review notice ("💾 Self-
+# improvement review: …", "💾 Memory updated", "💾 Skill '…' updated"). It is NOT
+# gated by any per-platform display setting — its only knob is the GLOBAL
+# `display.memory_notifications`, which we deliberately don't touch (it would also
+# silence the notice in Telegram, where it's wanted). Hermes marks this notice
+# `non_conversational` ONLY for Discord (`_non_conversational_metadata` in run.py
+# returns metadata unchanged for every other platform), so no metadata flag reaches
+# us to honor. We therefore drop it here using the SAME anchored emitter-contract
+# match Hermes's own Discord adapter falls back to — scoped to this email platform,
+# so Telegram (a different adapter) is unaffected.
+_NONCONVERSATIONAL_PATTERNS = (
+    re.compile(r"^\s*💾\s*Self-improvement review:\s+\S[\s\S]*$", re.IGNORECASE),
+    re.compile(
+        r"^\s*💾\s+Skill\s+['\"].+?['\"]\s+(?:created|updated|improved|patched)\.?[\s\S]*$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^\s*💾\s*Memory\b[\s\S]*$", re.IGNORECASE),
+)
+
+
+def _is_nonconversational_notice(content: str) -> bool:
+    """True when the WHOLE message is a background memory/skill review notice.
+
+    Anchored to the start so it only fires on a standalone status line — a real
+    agent reply that merely mentions memory is never matched.
+    """
+    return any(p.match(content) for p in _NONCONVERSATIONAL_PATTERNS)
 
 
 class MonsterMailboxAdapter(BasePlatformAdapter):
@@ -233,12 +262,35 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         )
         await self.handle_message(event)
 
+    async def handle_message(self, event) -> None:
+        # Hermes injects gateway-internal lifecycle events — background-process
+        # completion notices ("[IMPORTANT: Background process … exited (exit code
+        # N)]"), CLI-handoff prompts — as synthetic MessageEvent(internal=True)
+        # down the SAME inbound path as real email. On a reply-only email platform
+        # each one spawns a fresh agent turn and a real reply-all: a DUPLICATE
+        # email with no actual inbound (the root cause of "extra emails within a
+        # minute"). Drop internal events here so ONLY genuine inbound email
+        # (internal=False, which is what _on_inbox_new builds) can produce a reply.
+        # Startup-resume uses a separate dispatch path (not handle_message) and is
+        # unaffected; the backstop cron re-picks any inbox mail this might skip.
+        if getattr(event, "internal", False):
+            preview = (getattr(event, "text", "") or "").replace("\n", " ")[:80]
+            self.logger.info("MonsterMailbox: dropped internal gateway event (no email reply): %s", preview)
+            return
+        return await super().handle_message(event)
+
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
         # Don't email an empty body. Status/progress surfaces are suppressed at
         # the source by the minimal display tier (see install), so anything that
         # reaches here with content is a real reply.
         if not content or not str(content).strip():
             return SendResult(success=True, message_id="suppressed-empty")
+        # Drop the background memory/skill review notice (see module comment): it
+        # rides the same send() path as the real reply and carries no per-platform
+        # marker for email, so it's matched by its stable emitter shape. Telegram
+        # keeps it (different adapter).
+        if _is_nonconversational_notice(str(content)):
+            return SendResult(success=True, message_id="suppressed-nonconversational")
         msg_id = (metadata or {}).get("message_id") or self._reply_target.get(chat_id)
         if not msg_id:
             return SendResult(success=False, error="no MonsterMailbox message to reply to")
