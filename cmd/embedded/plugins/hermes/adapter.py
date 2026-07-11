@@ -20,11 +20,13 @@ failure the plain webhook channel has.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
+import time
 from typing import Optional
 
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
@@ -130,6 +132,15 @@ def _is_nonconversational_notice(content: str) -> bool:
     return any(p.match(content) for p in _NONCONVERSATIONAL_PATTERNS)
 
 
+# One reply per inbound. Hermes can hand send() a SECOND final response for the
+# same source thread — a queued-follow-up resend, or a duplicate inbound row —
+# which would each become a real email. With the auto-send model an agent emits
+# exactly one final reply per inbound, so a second reply to the same source is
+# always spurious. We drop it in-process within this window (fast path) AND pass
+# a stable idempotency key so the server de-dupes across processes/restarts too.
+_REPLY_DEDUP_WINDOW_S = 30 * 60
+
+
 class MonsterMailboxAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 50_000
 
@@ -145,6 +156,8 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         self._stop = asyncio.Event()
         self._seen: set[str] = set()
         self._reply_target: dict[str, str] = {}  # chat_id -> latest message_id
+        self._source_gmail_id: dict[str, str] = {}  # mmb msg_id -> inbound Gmail Message-ID
+        self._replied: dict[str, float] = {}  # source key -> monotonic ts of last reply
         allow = os.getenv("MMB_ALLOWED_SENDERS", "").strip()
         self._allowed = {a.strip().lower() for a in allow.split(",") if a.strip()}
 
@@ -245,6 +258,12 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
 
         chat_id = sender or msg_id
         self._reply_target[chat_id] = msg_id
+        # Remember the inbound's Gmail Message-ID so send() can key the reply's
+        # idempotency + per-source guard on the ORIGINAL email (stable, and shared
+        # across duplicate MonsterMailbox rows for the same Gmail message).
+        gmail_id = str(thread.get("message_id") or "").strip()
+        if gmail_id:
+            self._source_gmail_id[msg_id] = gmail_id
 
         source = self.build_source(
             chat_id=chat_id,
@@ -294,10 +313,48 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         msg_id = (metadata or {}).get("message_id") or self._reply_target.get(chat_id)
         if not msg_id:
             return SendResult(success=False, error="no MonsterMailbox message to reply to")
-        res = await self._mmb_json("reply-all", str(msg_id), "--body-html", content)
+
+        # One-reply-per-source guard (in-process fast path). A queued-follow-up
+        # resend or a duplicate inbound turn hands us a SECOND reply for the same
+        # source; drop it before the wasted send. See _REPLY_DEDUP_WINDOW_S.
+        source_key = self._source_key(msg_id)
+        now = time.monotonic()
+        self._prune_replied(now)
+        last = self._replied.get(source_key)
+        if last is not None and (now - last) < _REPLY_DEDUP_WINDOW_S:
+            self.logger.info(
+                "MonsterMailbox: suppressed duplicate reply to source %s (already replied %.0fs ago)",
+                source_key, now - last,
+            )
+            return SendResult(success=True, message_id="suppressed-duplicate-reply")
+
+        # Stable idempotency key on the ORIGINAL inbound → the server ships at
+        # most one email per inbound even across gateway processes / restarts
+        # (mmb reply-all forwards it as the Idempotency-Key header, which /send
+        # honors). Hashed so the header value is always a safe token.
+        idem = "hermes-mmb-reply:" + hashlib.sha256(source_key.encode("utf-8")).hexdigest()[:32]
+        res = await self._mmb_json(
+            "reply-all", str(msg_id), "--body-html", content, "--idempotency-key", idem,
+        )
         if res is None:
             return SendResult(success=False, error="mmb reply-all failed")
+        self._replied[source_key] = now
         return SendResult(success=True, message_id=str(res.get("outbound_id") or msg_id))
+
+    def _source_key(self, msg_id) -> str:
+        # Prefer the inbound's Gmail Message-ID (stable, and identical across
+        # duplicate MonsterMailbox rows for the same email); fall back to the mmb
+        # row id when we never saw the inbound (e.g. Hermes-injected metadata).
+        return self._source_gmail_id.get(str(msg_id)) or str(msg_id)
+
+    def _prune_replied(self, now: float) -> None:
+        # Bound the in-memory map on a long-lived gateway; entries past the window
+        # can never suppress again.
+        if len(self._replied) < 512:
+            return
+        cutoff = now - _REPLY_DEDUP_WINDOW_S
+        for k in [k for k, ts in self._replied.items() if ts < cutoff]:
+            self._replied.pop(k, None)
 
     async def send_typing(self, chat_id):
         return None
