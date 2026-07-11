@@ -5,9 +5,9 @@
 - Hermes adapter now sends **at most one email reply per inbound**, fixing
   duplicate replies from Hermes's queued-follow-up resend path (run.py hands the
   adapter a second final response for the same source thread) and from any
-  duplicate inbound rows. Two layers, both keyed on the inbound's Gmail
-  Message-ID (stable, and shared across duplicate MonsterMailbox rows for the
-  same email):
+  duplicate inbound rows. Two layers, both keyed on the inbound's RFC 5322
+  Message-ID (the standard header every email carries, provider-agnostic; stable,
+  and shared across duplicate MonsterMailbox rows for the same email):
   - an in-process guard drops a second reply to the same source within a 30-min
     window (fast path — no wasted send), and
   - a stable `--idempotency-key` on `mmb reply-all` (the header the server's
