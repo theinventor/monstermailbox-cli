@@ -156,7 +156,7 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         self._stop = asyncio.Event()
         self._seen: set[str] = set()
         self._reply_target: dict[str, str] = {}  # chat_id -> latest message_id
-        self._source_gmail_id: dict[str, str] = {}  # mmb msg_id -> inbound Gmail Message-ID
+        self._source_message_id: dict[str, str] = {}  # mmb msg_id -> inbound RFC 5322 Message-ID
         self._replied: dict[str, float] = {}  # source key -> monotonic ts of last reply
         allow = os.getenv("MMB_ALLOWED_SENDERS", "").strip()
         self._allowed = {a.strip().lower() for a in allow.split(",") if a.strip()}
@@ -258,12 +258,13 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
 
         chat_id = sender or msg_id
         self._reply_target[chat_id] = msg_id
-        # Remember the inbound's Gmail Message-ID so send() can key the reply's
+        # Remember the inbound's RFC 5322 Message-ID (the standard header every
+        # email carries, from any provider) so send() can key the reply's
         # idempotency + per-source guard on the ORIGINAL email (stable, and shared
-        # across duplicate MonsterMailbox rows for the same Gmail message).
-        gmail_id = str(thread.get("message_id") or "").strip()
-        if gmail_id:
-            self._source_gmail_id[msg_id] = gmail_id
+        # across duplicate MonsterMailbox rows for the same email).
+        source_message_id = str(thread.get("message_id") or "").strip()
+        if source_message_id:
+            self._source_message_id[msg_id] = source_message_id
 
         source = self.build_source(
             chat_id=chat_id,
@@ -342,10 +343,10 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=str(res.get("outbound_id") or msg_id))
 
     def _source_key(self, msg_id) -> str:
-        # Prefer the inbound's Gmail Message-ID (stable, and identical across
+        # Prefer the inbound's RFC 5322 Message-ID (stable, and identical across
         # duplicate MonsterMailbox rows for the same email); fall back to the mmb
         # row id when we never saw the inbound (e.g. Hermes-injected metadata).
-        return self._source_gmail_id.get(str(msg_id)) or str(msg_id)
+        return self._source_message_id.get(str(msg_id)) or str(msg_id)
 
     def _prune_replied(self, now: float) -> None:
         # Bound the in-memory map on a long-lived gateway; entries past the window
