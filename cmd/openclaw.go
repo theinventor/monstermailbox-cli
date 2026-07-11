@@ -87,6 +87,7 @@ watcher, then verify with:  openclaw plugins inspect monstermailbox`,
 					fmt.Fprintf(out, "  • add/update the %q cron in %s (every %s, isolated session)\n",
 						openClawBackstopJobName, filepath.Join(ocHome, "cron", "jobs.json"), backstopInterval)
 				}
+				fmt.Fprintf(out, "  • disable any active inbox.new webhook (the plugin delivers inbound; both at once = duplicate replies)\n")
 				return nil
 			}
 
@@ -115,6 +116,10 @@ watcher, then verify with:  openclaw plugins inspect monstermailbox`,
 					fmt.Fprintf(out, "⚠ backstop cron not installed: %v\n", err)
 				}
 			}
+
+			// The plugin now owns inbound delivery; a leftover inbox.new webhook
+			// would double-deliver every email (duplicate replies). Pause it.
+			disableConflictingInboxWebhooks(out, newAPIClient())
 
 			fmt.Fprintf(out, "\nNext steps:\n")
 			fmt.Fprintf(out, "  1. Ensure the mmb CLI is authenticated: mmb whoami\n")
