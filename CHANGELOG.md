@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Hermes adapter now sends **at most one email reply per inbound**, fixing
+  duplicate replies from Hermes's queued-follow-up resend path (run.py hands the
+  adapter a second final response for the same source thread) and from any
+  duplicate inbound rows. Two layers, both keyed on the inbound's Gmail
+  Message-ID (stable, and shared across duplicate MonsterMailbox rows for the
+  same email):
+  - an in-process guard drops a second reply to the same source within a 30-min
+    window (fast path — no wasted send), and
+  - a stable `--idempotency-key` on `mmb reply-all` (the header the server's
+    `/send` `IdempotentCreate` already honors) so the server de-dupes across
+    gateway processes and restarts too.
+  With the auto-send model an agent emits exactly one final reply per inbound, so
+  a second reply to the same source is always spurious — no legitimate send is
+  suppressed. Pairs with the server-side inbound dedup (monstermailbox-ai) that
+  removes the duplicate rows at the root.
+
 - Fixed duplicate email replies caused by Hermes injecting **gateway-internal
   synthetic events** into the MonsterMailbox session. When a turn spawns a
   background process (e.g. a video render), Hermes later injects a
