@@ -253,6 +253,26 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         if self._allowed and sender not in self._allowed:
             self.logger.info("MonsterMailbox: sender %s not allow-listed; ignoring", sender)
             return
+
+        # CLAIM before dispatching the turn — this is the whole point of the
+        # lifecycle. It moves the message to work_state=in_progress so every cron
+        # / backstop poller filters it out while this SSE turn owns it. Without
+        # the claim the message stays `inbox` and a 5-min worker replies to it
+        # too → duplicate email. A claim conflict (409 → None) means another
+        # caller already owns it; skip and let them handle it. send() marks it
+        # done after the reply.
+        claim = await self._mmb_json(
+            "msg", "claim", msg_id,
+            "--claimed-by", "hermes-sse",
+            "--expected-current-state", "inbox",
+            "--note", "claimed by the MonsterMailbox SSE plugin",
+        )
+        if claim is None:
+            self.logger.info(
+                "MonsterMailbox: msg %s already claimed/moved — skipping SSE dispatch", msg_id
+            )
+            return
+
         subject = thread.get("subject") or data.get("subject") or "(no subject)"
         body = thread.get("body_text") or ""
 
@@ -300,18 +320,20 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         return await super().handle_message(event)
 
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
-        # Don't email an empty body. Status/progress surfaces are suppressed at
-        # the source by the minimal display tier (see install), so anything that
-        # reaches here with content is a real reply.
-        if not content or not str(content).strip():
-            return SendResult(success=True, message_id="suppressed-empty")
-        # Drop the background memory/skill review notice (see module comment): it
-        # rides the same send() path as the real reply and carries no per-platform
-        # marker for email, so it's matched by its stable emitter shape. Telegram
-        # keeps it (different adapter).
-        if _is_nonconversational_notice(str(content)):
-            return SendResult(success=True, message_id="suppressed-nonconversational")
         msg_id = (metadata or {}).get("message_id") or self._reply_target.get(chat_id)
+
+        # Nothing emailable — an empty body, or the background memory/skill review
+        # notice (see module comment; it rides the same send() path and carries no
+        # per-platform marker for email, so it's matched by its stable emitter
+        # shape, and Telegram keeps it via its own adapter). The inbound turn is
+        # still handled, so dispose the message we claimed in _on_inbox_new.
+        if not content or not str(content).strip():
+            await self._mark_done(msg_id)
+            return SendResult(success=True, message_id="suppressed-empty")
+        if _is_nonconversational_notice(str(content)):
+            await self._mark_done(msg_id)
+            return SendResult(success=True, message_id="suppressed-nonconversational")
+
         if not msg_id:
             return SendResult(success=False, error="no MonsterMailbox message to reply to")
 
@@ -340,7 +362,22 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         if res is None:
             return SendResult(success=False, error="mmb reply-all failed")
         self._replied[source_key] = now
+        await self._mark_done(msg_id)
         return SendResult(success=True, message_id=str(res.get("outbound_id") or msg_id))
+
+    async def _mark_done(self, msg_id) -> None:
+        # Complete the lifecycle: dispose the message _on_inbox_new claimed, so a
+        # cron / the backstop never reprocesses it (a claimed-but-not-done message
+        # would be re-picked at the stale-claim threshold → a late duplicate).
+        # Best-effort and tolerant of a state conflict (the message may already be
+        # done via another path — e.g. an agent workflow).
+        if not msg_id:
+            return
+        await self._mmb_json(
+            "msg", "done", str(msg_id),
+            "--expected-current-state", "in_progress",
+            "--note", "handled by the MonsterMailbox SSE plugin",
+        )
 
     def _source_key(self, msg_id) -> str:
         # Prefer the inbound's RFC 5322 Message-ID (stable, and identical across
@@ -425,11 +462,13 @@ def register(ctx) -> None:
         pii_safe=True,
         emoji="📬",
         platform_hint=(
-            "You are handling email via MonsterMailbox. Your FINAL message is sent "
-            "automatically as the email reply — write it as a complete, plain-language "
-            "reply. Do NOT run `mmb reply-all` yourself (that double-sends). Use the "
-            "terminal tool with `mmb` only for workflow actions: `mmb msg claim <id>`, "
-            "`mmb msg done <id>`, `mmb whitelist`, quarantine handling."
+            "You are handling email via MonsterMailbox. The platform has ALREADY "
+            "claimed this message and will mark it done after your reply — do NOT run "
+            "`mmb msg claim` or `mmb msg done` on the message you are replying to. Your "
+            "FINAL message is sent automatically as the email reply, so write it as a "
+            "complete, plain-language reply and do NOT run `mmb reply-all` yourself "
+            "(that double-sends). Use the terminal tool with `mmb` only for other "
+            "workflow actions: `mmb whitelist`, quarantine handling."
         ),
         allow_update_command=True,
     )

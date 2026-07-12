@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Hermes adapter now **claims the message before dispatch and marks it done after
+  the reply** — completing the intake lifecycle the plugin was missing. Without
+  the claim, an inbound stayed `work_state=inbox` while the SSE turn handled it,
+  so a poller (a 5-min worker cron / the backstop) grabbed the SAME message and
+  replied too → duplicate email. (The v0.16.7 idempotency key didn't catch this
+  because the cron path replies via the agent's own `mmb reply-all`, not the
+  adapter's keyed send — two different reply mechanisms.) `_on_inbox_new` now runs
+  `mmb msg claim` (atomic — a 409 means another caller already owns it, so we
+  skip), and `send()` runs `mmb msg done` after the reply (and on the
+  empty/notice paths) so nothing reprocesses a claimed message. The platform hint
+  now tells agents the platform owns claim/done for the message they're replying
+  to, so a workflow skill doesn't double-claim.
+
 - Hermes adapter now sends **at most one email reply per inbound**, fixing
   duplicate replies from Hermes's queued-follow-up resend path (run.py hands the
   adapter a second final response for the same source thread) and from any
