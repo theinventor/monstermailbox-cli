@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Suppress **gateway lifecycle chrome** on the email channel — a gateway restart
+  emits `⚠️ Gateway shutting down — Your current task will be interrupted.` into
+  the active session, which was leaking out as a real email. The adapter's
+  non-reply suppression now also matches the gateway lifecycle notices
+  (shutting down / restarted / online / starting), plus belts for the busy-ack /
+  compression heartbeats, background-process lines, and Hermes self-update
+  outcome. Patterns are anchored to a standalone status line (leading emoji
+  swallowed), so a real reply that merely mentions "gateway" or "working on…" is
+  never matched.
+
 - Hermes adapter now **claims the message before dispatch and marks it done after
   the reply** — completing the intake lifecycle the plugin was missing. Without
   the claim, an inbound stayed `work_state=inbox` while the SSE turn handled it,

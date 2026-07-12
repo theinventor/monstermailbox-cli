@@ -114,12 +114,30 @@ def check_monstermailbox_requirements() -> bool:
 # match Hermes's own Discord adapter falls back to — scoped to this email platform,
 # so Telegram (a different adapter) is unaffected.
 _NONCONVERSATIONAL_PATTERNS = (
+    # Background memory / skill self-improvement review.
     re.compile(r"^\s*💾\s*Self-improvement review:\s+\S[\s\S]*$", re.IGNORECASE),
     re.compile(
         r"^\s*💾\s+Skill\s+['\"].+?['\"]\s+(?:created|updated|improved|patched)\.?[\s\S]*$",
         re.IGNORECASE,
     ),
     re.compile(r"^\s*💾\s*Memory\b[\s\S]*$", re.IGNORECASE),
+    # Gateway lifecycle chrome (shutdown/restart/online) — a gateway restart emits
+    # "⚠️ Gateway shutting down …" into the active session and it must not become
+    # an email. `\S{0,3}` swallows the leading status emoji (+ variation selector).
+    re.compile(
+        r"^\s*\S{0,3}\s*Gateway\s+(?:shutting down|restarted|online|starting|is\s+(?:online|starting))\b[\s\S]*$",
+        re.IGNORECASE,
+    ),
+    # Busy-ack / progress / compression heartbeats (the minimal display tier gates
+    # these at the source; matched here too as a belt for older gateways).
+    re.compile(r"^\s*\S{0,3}\s*Working\s+[—–-]\s*\d+\s*min\b[\s\S]*$", re.IGNORECASE),
+    re.compile(r"^\s*\S{0,3}\s*Interrupting\b[\s\S]*$", re.IGNORECASE),
+    re.compile(r"^\s*\S{0,3}\s*Preflight compression\b[\s\S]*$", re.IGNORECASE),
+    # Background-process lifecycle (handle_message drops the internal event too;
+    # belt for any that reach send() as content).
+    re.compile(r"^\s*\[?\s*(?:IMPORTANT:\s*)?Background process\b[\s\S]*$", re.IGNORECASE),
+    # Hermes self-update outcome.
+    re.compile(r"^\s*\S{0,3}\s*Hermes update\s+(?:finished|failed|timed out|started)\b[\s\S]*$", re.IGNORECASE),
 )
 
 
