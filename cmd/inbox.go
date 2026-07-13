@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -364,6 +365,22 @@ func runEventStream(cmd *cobra.Command, opts eventStreamOptions) error {
 // or heartbeat arrives within streamIdleTimeout. This replaces the old
 // behavior where a 30s http.Client.Timeout killed the stream — and thus
 // dropped any event landing in the reconnect gap — every 30 seconds.
+// advanceCursor returns the forward-most of the current cursor and a
+// candidate event id. Ids are numeric (inbox message ids); a candidate
+// that doesn't parse is ignored, and an unparseable current cursor is
+// replaced by any parseable candidate.
+func advanceCursor(current, candidate string) string {
+	cand, err := strconv.ParseInt(candidate, 10, 64)
+	if err != nil {
+		return current
+	}
+	cur, err := strconv.ParseInt(current, 10, 64)
+	if err != nil || cand > cur {
+		return candidate
+	}
+	return current
+}
+
 func streamOnce(out io.Writer, cli *client.Client, opts eventStreamOptions, lastEventID *string) (bool, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -408,9 +425,14 @@ func streamOnce(out io.Writer, cli *client.Client, opts eventStreamOptions, last
 		watchdog.Reset(streamIdleTimeout)
 
 		// Track the resume cursor from any event carrying an id (inbox
-		// events do; connected/heartbeat/outbound don't).
+		// events and, on newer servers, the connected hello — which seeds
+		// the cursor; heartbeat/outbound don't). Only ever advance
+		// FORWARD: broadcasts can arrive out of id order (concurrent
+		// classification jobs), and a cursor that moves backwards makes
+		// the server's replay re-deliver events we already emitted on
+		// every reconnect — which the server now forces ~every 60s.
 		if ev.ID != "" && lastEventID != nil {
-			*lastEventID = ev.ID
+			*lastEventID = advanceCursor(*lastEventID, ev.ID)
 		}
 
 		if ev.IsComment {
