@@ -1,11 +1,13 @@
 name: monstermailbox
 label: MonsterMailbox
 kind: platform
-version: 1.0.0
+version: 0.5.0
 description: >
   MonsterMailbox gateway adapter for Hermes. Streams inbound agent email over the
-  MonsterMailbox SSE event feed (mmb inbox watch / GET /events) and replies via the
-  mmb CLI. No public webhook endpoint required.
+  MonsterMailbox SSE event feed (mmb inbox watch / GET /events) and wakes the agent
+  to run its own email-handling skill (which triages, replies, and dispositions via
+  the mmb CLI). Thin trigger — the plugin never auto-replies. No public webhook
+  endpoint required.
 author: MonsterMailbox
 requires_env: []
 optional_env:

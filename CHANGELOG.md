@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Decoupled the Hermes plugin from replying — the plugin is now a thin trigger
+  (plugin manifest → 0.5.0).** On each inbound email it wakes the agent with a
+  short prompt pointing it at the agent's OWN email-handling skill ("Find your
+  skill for handling MonsterMailbox email and run it … if you can't find one, ask
+  your human"), and does nothing else. The skill owns triage, the reply
+  (`mmb reply-all`, sent only when a human is actually awaiting one), and
+  disposition (`mmb msg claim/done/block`). The adapter **no longer auto-sends**
+  the turn output as email. This removes the whole class of auto-send failures at
+  the root — over-replying to notifications / no-reply senders, duplicate replies
+  from competing SSE-vs-cron reply paths, and gateway status chrome leaking as
+  email — because there is no auto-send path left to misfire. Removed the
+  now-unneeded reply-dedup guard, idempotency-key wiring, adapter-side claim/done,
+  and the status-notice content suppression.
+  **Breaking:** an email agent must have an email-handling skill; an agent with no
+  matching skill is told to escalate to its human rather than guess or reply.
+
 - Suppress **gateway lifecycle chrome** on the email channel — a gateway restart
   emits `⚠️ Gateway shutting down — Your current task will be interrupted.` into
   the active session, which was leaking out as a real email. The adapter's
