@@ -3,8 +3,10 @@ package cmd
 import (
 	"embed"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/theinventor/monstermailbox-cli/internal/exitcode"
@@ -31,7 +33,115 @@ receives inbound email over the SSE event stream (mmb inbox watch) and replies
 via the mmb CLI — no webhook, no public endpoint, no signing secret.`,
 	}
 	c.AddCommand(newHermesInstallCmd())
+	c.AddCommand(newHermesDoctorCmd())
 	return c
+}
+
+// newHermesDoctorCmd diagnoses and repairs a MonsterMailbox Hermes plugin
+// install. Its main job is evicting shadow plugin directories (see
+// deShadowMonstermailboxPlugins) that silently override the installed adapter.
+func newHermesDoctorCmd() *cobra.Command {
+	var home string
+	c := &cobra.Command{
+		Use:   "doctor",
+		Short: "Diagnose and repair the MonsterMailbox Hermes plugin install",
+		Long: `Checks the Hermes plugin directory for problems that silently break inbound
+email — most importantly leftover backup/duplicate directories that declare the
+same "monstermailbox" platform name and override the installed adapter (Hermes
+loads every manifest under plugins/, last one wins). Repairs them by moving them
+out of the plugin scan path into <hermes-home>/plugin-archive/.
+
+Run this if inbound email behaves like an old plugin version (stale or duplicate
+replies) after repeated installs. Restart the Hermes gateway afterward so the
+cleaned plugin set loads.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			out := cmd.OutOrStdout()
+			hHome, err := resolveHermesHome(home)
+			if err != nil {
+				return exitcode.Wrap(exitcode.Usage, err)
+			}
+			destDir := filepath.Join(hHome, "plugins", "monstermailbox")
+			if _, err := os.Stat(destDir); err != nil {
+				return exitcode.Wrap(exitcode.Usage,
+					fmt.Errorf("no monstermailbox plugin at %s (run: mmb hermes install)", destDir))
+			}
+			n := deShadowMonstermailboxPlugins(hHome, out)
+			if n == 0 {
+				fmt.Fprintf(out, "✓ plugin scan path is clean — no shadowing directories found\n")
+			} else {
+				fmt.Fprintf(out, "\n✓ evicted %d shadowing dir(s). Restart the Hermes gateway now so the clean plugin set loads.\n", n)
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&home, "home", "", "Hermes home dir (default: $HERMES_HOME or ~/.hermes)")
+	return c
+}
+
+// deShadowMonstermailboxPlugins moves any directory under <hermes-home>/plugins/
+// (other than the canonical "monstermailbox" dir) whose manifest declares
+// name: monstermailbox out of the scan path and into <hermes-home>/plugin-archive/.
+//
+// Hermes discovers plugins by scanning EVERY subdirectory of plugins/ and
+// registering each manifest it finds; when several declare the same platform
+// name, the last one loaded wins. A leftover backup dir (e.g. the
+// "monstermailbox.backup.<timestamp>" a deploy script leaves behind) therefore
+// silently overrides the freshly-installed adapter — the exact bug that made
+// installs appear to "not take". Returns the number of directories evicted.
+func deShadowMonstermailboxPlugins(hHome string, out io.Writer) int {
+	pluginsDir := filepath.Join(hHome, "plugins")
+	entries, err := os.ReadDir(pluginsDir)
+	if err != nil {
+		return 0
+	}
+	archiveDir := filepath.Join(hHome, "plugin-archive")
+	moved := 0
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == "monstermailbox" {
+			continue
+		}
+		dir := filepath.Join(pluginsDir, e.Name())
+		if !declaresMonstermailboxPlugin(dir) {
+			continue
+		}
+		if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+			fmt.Fprintf(out, "⚠ found shadow plugin %s but could not create %s: %v\n", e.Name(), archiveDir, err)
+			continue
+		}
+		dest := filepath.Join(archiveDir, e.Name())
+		if _, err := os.Stat(dest); err == nil {
+			dest += ".dup"
+		}
+		if err := os.Rename(dir, dest); err != nil {
+			fmt.Fprintf(out, "⚠ found shadow plugin %s but could not move it: %v\n", e.Name(), err)
+			continue
+		}
+		fmt.Fprintf(out, "✓ evicted shadow plugin %s → %s (it declared name: monstermailbox and would override the real adapter)\n", e.Name(), dest)
+		moved++
+	}
+	return moved
+}
+
+// declaresMonstermailboxPlugin reports whether dir holds a plugin manifest
+// (plugin.yaml/plugin.yml) whose name is monstermailbox — i.e. it registers the
+// same platform as the real plugin and would shadow it.
+func declaresMonstermailboxPlugin(dir string) bool {
+	for _, name := range []string{"plugin.yaml", "plugin.yml"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		var m struct {
+			Name string `yaml:"name"`
+		}
+		if err := yaml.Unmarshal(data, &m); err != nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(m.Name), "monstermailbox") {
+			return true
+		}
+	}
+	return false
 }
 
 func newHermesInstallCmd() *cobra.Command {
@@ -73,6 +183,7 @@ failure the plain webhook channel has.`,
 			if dryRun {
 				fmt.Fprintf(out, "DRY RUN — would:\n")
 				fmt.Fprintf(out, "  • write plugin files to %s\n", destDir)
+				fmt.Fprintf(out, "  • evict any shadowing backup/duplicate plugin dir (declares name: monstermailbox) → %s/plugin-archive\n", hHome)
 				fmt.Fprintf(out, "  • record the mmb path in %s/mmb_path\n", destDir)
 				fmt.Fprintf(out, "  • patch %s: plugins.enabled += monstermailbox\n", cfgPath)
 				fmt.Fprintf(out, "  • patch %s: platform_toolsets.monstermailbox: [hermes-cli]\n", cfgPath)
@@ -96,6 +207,14 @@ failure the plain webhook channel has.`,
 				return fmt.Errorf("write plugin files: %w", err)
 			}
 			fmt.Fprintf(out, "✓ wrote plugin to %s\n", destDir)
+
+			// Evict any leftover backup/duplicate plugin dir that declares the
+			// same platform name — Hermes scans every dir under plugins/ and the
+			// last manifest loaded wins, so a stray backup silently overrides
+			// this adapter (an install that appears to "not take").
+			if n := deShadowMonstermailboxPlugins(hHome, out); n > 0 {
+				fmt.Fprintf(out, "✓ cleared %d shadowing plugin dir(s) from the scan path\n", n)
+			}
 
 			// Record the absolute mmb path so the adapter doesn't depend on the
 			// gateway's PATH (which often omits the mmb install dir).

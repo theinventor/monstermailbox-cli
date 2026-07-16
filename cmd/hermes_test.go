@@ -158,6 +158,84 @@ func TestEmbeddedAdaptersDoNotPassJsonToMsgGet(t *testing.T) {
 	}
 }
 
+// A leftover backup dir declaring name: monstermailbox shadows the real plugin
+// because Hermes registers every manifest under plugins/ (last wins). Install
+// must evict it from the scan path.
+func TestHermesInstall_EvictsShadowingBackupDir(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("plugins: {}\n"), 0o644)
+
+	// Simulate a deploy-script backup left inside the scan path.
+	shadow := filepath.Join(dir, "plugins", "monstermailbox.backup.20260711T195455Z")
+	os.MkdirAll(shadow, 0o755)
+	os.WriteFile(filepath.Join(shadow, "plugin.yaml"), []byte("name: monstermailbox\nversion: 0.1.0\n"), 0o644)
+	os.WriteFile(filepath.Join(shadow, "adapter.py"), []byte("# old\n"), 0o644)
+
+	// An unrelated plugin must be left alone.
+	other := filepath.Join(dir, "plugins", "some-other-plugin")
+	os.MkdirAll(other, 0o755)
+	os.WriteFile(filepath.Join(other, "plugin.yaml"), []byte("name: some-other-plugin\n"), 0o644)
+
+	root := NewRootCmd()
+	root.SetArgs([]string{"hermes", "install", "--home", dir, "--force"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	if _, err := os.Stat(shadow); !os.IsNotExist(err) {
+		t.Error("shadowing backup dir must be evicted from the plugin scan path")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "plugin-archive", "monstermailbox.backup.20260711T195455Z")); err != nil {
+		t.Errorf("evicted shadow must land in plugin-archive/: %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Error("unrelated plugin must NOT be touched")
+	}
+	// The real plugin must still be in place.
+	if _, err := os.Stat(filepath.Join(dir, "plugins", "monstermailbox", "adapter.py")); err != nil {
+		t.Error("the real monstermailbox plugin must remain installed")
+	}
+}
+
+func TestHermesDoctor_EvictsShadowAndReportsClean(t *testing.T) {
+	dir := t.TempDir()
+	// A real install must exist for doctor to run.
+	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("plugins: {}\n"), 0o644)
+	real := filepath.Join(dir, "plugins", "monstermailbox")
+	os.MkdirAll(real, 0o755)
+	os.WriteFile(filepath.Join(real, "plugin.yaml"), []byte("name: monstermailbox\nversion: 0.5.0\n"), 0o644)
+
+	// First run with a shadow present → evicts it.
+	shadow := filepath.Join(dir, "plugins", "monstermailbox.old")
+	os.MkdirAll(shadow, 0o755)
+	os.WriteFile(filepath.Join(shadow, "plugin.yaml"), []byte("name: MonsterMailbox\n"), 0o644) // case-insensitive
+
+	root := NewRootCmd()
+	root.SetArgs([]string{"hermes", "doctor", "--home", dir})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if _, err := os.Stat(shadow); !os.IsNotExist(err) {
+		t.Error("doctor must evict the shadow dir")
+	}
+
+	// Second run with nothing to fix → must succeed (idempotent).
+	root = NewRootCmd()
+	root.SetArgs([]string{"hermes", "doctor", "--home", dir})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("doctor (clean run): %v", err)
+	}
+}
+
+func TestHermesDoctor_FailsWithoutInstalledPlugin(t *testing.T) {
+	dir := t.TempDir() // no plugin installed
+	root := NewRootCmd()
+	root.SetArgs([]string{"hermes", "doctor", "--home", dir})
+	if err := root.Execute(); err == nil {
+		t.Error("doctor MUST fail when no monstermailbox plugin is installed")
+	}
+}
+
 func toStrings(v any) []string {
 	var out []string
 	if s, ok := v.([]any); ok {
