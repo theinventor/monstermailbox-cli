@@ -20,13 +20,10 @@ failure the plain webhook channel has.
 """
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
-import re
 import shutil
-import time
 from typing import Optional
 
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
@@ -97,66 +94,13 @@ def check_monstermailbox_requirements() -> bool:
         return False
 
 
-# Most non-reply surfaces (the "⏳ Working…" heartbeat, tool progress, interim
-# chatter, lifecycle notices) are suppressed BY DESIGN, not by content matching:
-# `mmb hermes install` registers this platform at Hermes's minimal/non-interactive
-# display tier (display.platforms.monstermailbox) so the gateway never generates
-# them for us.
-#
-# The ONE exception is the background memory/skill review notice ("💾 Self-
-# improvement review: …", "💾 Memory updated", "💾 Skill '…' updated"). It is NOT
-# gated by any per-platform display setting — its only knob is the GLOBAL
-# `display.memory_notifications`, which we deliberately don't touch (it would also
-# silence the notice in Telegram, where it's wanted). Hermes marks this notice
-# `non_conversational` ONLY for Discord (`_non_conversational_metadata` in run.py
-# returns metadata unchanged for every other platform), so no metadata flag reaches
-# us to honor. We therefore drop it here using the SAME anchored emitter-contract
-# match Hermes's own Discord adapter falls back to — scoped to this email platform,
-# so Telegram (a different adapter) is unaffected.
-_NONCONVERSATIONAL_PATTERNS = (
-    # Background memory / skill self-improvement review.
-    re.compile(r"^\s*💾\s*Self-improvement review:\s+\S[\s\S]*$", re.IGNORECASE),
-    re.compile(
-        r"^\s*💾\s+Skill\s+['\"].+?['\"]\s+(?:created|updated|improved|patched)\.?[\s\S]*$",
-        re.IGNORECASE,
-    ),
-    re.compile(r"^\s*💾\s*Memory\b[\s\S]*$", re.IGNORECASE),
-    # Gateway lifecycle chrome (shutdown/restart/online) — a gateway restart emits
-    # "⚠️ Gateway shutting down …" into the active session and it must not become
-    # an email. `\S{0,3}` swallows the leading status emoji (+ variation selector).
-    re.compile(
-        r"^\s*\S{0,3}\s*Gateway\s+(?:shutting down|restarted|online|starting|is\s+(?:online|starting))\b[\s\S]*$",
-        re.IGNORECASE,
-    ),
-    # Busy-ack / progress / compression heartbeats (the minimal display tier gates
-    # these at the source; matched here too as a belt for older gateways).
-    re.compile(r"^\s*\S{0,3}\s*Working\s+[—–-]\s*\d+\s*min\b[\s\S]*$", re.IGNORECASE),
-    re.compile(r"^\s*\S{0,3}\s*Interrupting\b[\s\S]*$", re.IGNORECASE),
-    re.compile(r"^\s*\S{0,3}\s*Preflight compression\b[\s\S]*$", re.IGNORECASE),
-    # Background-process lifecycle (handle_message drops the internal event too;
-    # belt for any that reach send() as content).
-    re.compile(r"^\s*\[?\s*(?:IMPORTANT:\s*)?Background process\b[\s\S]*$", re.IGNORECASE),
-    # Hermes self-update outcome.
-    re.compile(r"^\s*\S{0,3}\s*Hermes update\s+(?:finished|failed|timed out|started)\b[\s\S]*$", re.IGNORECASE),
-)
-
-
-def _is_nonconversational_notice(content: str) -> bool:
-    """True when the WHOLE message is a background memory/skill review notice.
-
-    Anchored to the start so it only fires on a standalone status line — a real
-    agent reply that merely mentions memory is never matched.
-    """
-    return any(p.match(content) for p in _NONCONVERSATIONAL_PATTERNS)
-
-
-# One reply per inbound. Hermes can hand send() a SECOND final response for the
-# same source thread — a queued-follow-up resend, or a duplicate inbound row —
-# which would each become a real email. With the auto-send model an agent emits
-# exactly one final reply per inbound, so a second reply to the same source is
-# always spurious. We drop it in-process within this window (fast path) AND pass
-# a stable idempotency key so the server de-dupes across processes/restarts too.
-_REPLY_DEDUP_WINDOW_S = 30 * 60
+# The plugin is a THIN TRIGGER. It does NOT read, reply to, claim, or dispose
+# email. On each inbound it wakes the agent and points it at the agent's OWN
+# email-handling skill (see _on_inbox_new). That skill owns everything: triage,
+# the reply (`mmb reply-all`, sent ONLY when a human is awaiting a response), and
+# disposition (`mmb msg claim/done/block`). send() therefore never emails anything
+# (see send()), which is what makes over-replying, double-replies, and status-
+# chrome leaks structurally impossible — there is no auto-send path to misfire.
 
 
 class MonsterMailboxAdapter(BasePlatformAdapter):
@@ -172,10 +116,7 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
             self.logger = logging.getLogger("monstermailbox")
         self._watch_task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
-        self._seen: set[str] = set()
-        self._reply_target: dict[str, str] = {}  # chat_id -> latest message_id
-        self._source_message_id: dict[str, str] = {}  # mmb msg_id -> inbound RFC 5322 Message-ID
-        self._replied: dict[str, float] = {}  # source key -> monotonic ts of last reply
+        self._seen: set[str] = set()  # msg ids we've already woken the agent for
         allow = os.getenv("MMB_ALLOWED_SENDERS", "").strip()
         self._allowed = {a.strip().lower() for a in allow.split(",") if a.strip()}
 
@@ -272,38 +213,9 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
             self.logger.info("MonsterMailbox: sender %s not allow-listed; ignoring", sender)
             return
 
-        # CLAIM before dispatching the turn — this is the whole point of the
-        # lifecycle. It moves the message to work_state=in_progress so every cron
-        # / backstop poller filters it out while this SSE turn owns it. Without
-        # the claim the message stays `inbox` and a 5-min worker replies to it
-        # too → duplicate email. A claim conflict (409 → None) means another
-        # caller already owns it; skip and let them handle it. send() marks it
-        # done after the reply.
-        claim = await self._mmb_json(
-            "msg", "claim", msg_id,
-            "--claimed-by", "hermes-sse",
-            "--expected-current-state", "inbox",
-            "--note", "claimed by the MonsterMailbox SSE plugin",
-        )
-        if claim is None:
-            self.logger.info(
-                "MonsterMailbox: msg %s already claimed/moved — skipping SSE dispatch", msg_id
-            )
-            return
-
         subject = thread.get("subject") or data.get("subject") or "(no subject)"
-        body = thread.get("body_text") or ""
 
         chat_id = sender or msg_id
-        self._reply_target[chat_id] = msg_id
-        # Remember the inbound's RFC 5322 Message-ID (the standard header every
-        # email carries, from any provider) so send() can key the reply's
-        # idempotency + per-source guard on the ORIGINAL email (stable, and shared
-        # across duplicate MonsterMailbox rows for the same email).
-        source_message_id = str(thread.get("message_id") or "").strip()
-        if source_message_id:
-            self._source_message_id[msg_id] = source_message_id
-
         source = self.build_source(
             chat_id=chat_id,
             chat_name=sender,
@@ -313,7 +225,19 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
             thread_id=str(thread.get("thread_root_message_id") or msg_id),
             message_id=msg_id,
         )
-        text = f"Subject: {subject}\nFrom: {sender}\n\n{body}"
+        # Thin trigger: wake the agent and point it at its OWN email skill. We pass
+        # id + sender + subject; the skill reads the body (`mmb msg get`), triages,
+        # replies (`mmb reply-all`) only when warranted, and dispositions the
+        # message. The plugin does none of that. If the agent has no matching skill,
+        # the prompt tells it to escalate to its human rather than guess or reply.
+        text = (
+            f'You have a new email in your MonsterMailbox (mmb) inbox: message {msg_id} '
+            f'from {sender}, subject "{subject}". Find your skill for handling '
+            f"MonsterMailbox email and run it. Hint: it should include guidance for how "
+            f"to triage and how to add dispositions to the messages with mmb. If you "
+            f"can't find a relevant skill for this, do not guess or reply — ask your "
+            f"human what to do in your primary channel with them."
+        )
         event = MessageEvent(
             text=text, message_type=MessageType.TEXT, source=source,
             message_id=msg_id, raw_message=thread or data,
@@ -338,79 +262,14 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         return await super().handle_message(event)
 
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
-        msg_id = (metadata or {}).get("message_id") or self._reply_target.get(chat_id)
-
-        # Nothing emailable — an empty body, or the background memory/skill review
-        # notice (see module comment; it rides the same send() path and carries no
-        # per-platform marker for email, so it's matched by its stable emitter
-        # shape, and Telegram keeps it via its own adapter). The inbound turn is
-        # still handled, so dispose the message we claimed in _on_inbox_new.
-        if not content or not str(content).strip():
-            await self._mark_done(msg_id)
-            return SendResult(success=True, message_id="suppressed-empty")
-        if _is_nonconversational_notice(str(content)):
-            await self._mark_done(msg_id)
-            return SendResult(success=True, message_id="suppressed-nonconversational")
-
-        if not msg_id:
-            return SendResult(success=False, error="no MonsterMailbox message to reply to")
-
-        # One-reply-per-source guard (in-process fast path). A queued-follow-up
-        # resend or a duplicate inbound turn hands us a SECOND reply for the same
-        # source; drop it before the wasted send. See _REPLY_DEDUP_WINDOW_S.
-        source_key = self._source_key(msg_id)
-        now = time.monotonic()
-        self._prune_replied(now)
-        last = self._replied.get(source_key)
-        if last is not None and (now - last) < _REPLY_DEDUP_WINDOW_S:
-            self.logger.info(
-                "MonsterMailbox: suppressed duplicate reply to source %s (already replied %.0fs ago)",
-                source_key, now - last,
-            )
-            return SendResult(success=True, message_id="suppressed-duplicate-reply")
-
-        # Stable idempotency key on the ORIGINAL inbound → the server ships at
-        # most one email per inbound even across gateway processes / restarts
-        # (mmb reply-all forwards it as the Idempotency-Key header, which /send
-        # honors). Hashed so the header value is always a safe token.
-        idem = "hermes-mmb-reply:" + hashlib.sha256(source_key.encode("utf-8")).hexdigest()[:32]
-        res = await self._mmb_json(
-            "reply-all", str(msg_id), "--body-html", content, "--idempotency-key", idem,
-        )
-        if res is None:
-            return SendResult(success=False, error="mmb reply-all failed")
-        self._replied[source_key] = now
-        await self._mark_done(msg_id)
-        return SendResult(success=True, message_id=str(res.get("outbound_id") or msg_id))
-
-    async def _mark_done(self, msg_id) -> None:
-        # Complete the lifecycle: dispose the message _on_inbox_new claimed, so a
-        # cron / the backstop never reprocesses it (a claimed-but-not-done message
-        # would be re-picked at the stale-claim threshold → a late duplicate).
-        # Best-effort and tolerant of a state conflict (the message may already be
-        # done via another path — e.g. an agent workflow).
-        if not msg_id:
-            return
-        await self._mmb_json(
-            "msg", "done", str(msg_id),
-            "--expected-current-state", "in_progress",
-            "--note", "handled by the MonsterMailbox SSE plugin",
-        )
-
-    def _source_key(self, msg_id) -> str:
-        # Prefer the inbound's RFC 5322 Message-ID (stable, and identical across
-        # duplicate MonsterMailbox rows for the same email); fall back to the mmb
-        # row id when we never saw the inbound (e.g. Hermes-injected metadata).
-        return self._source_message_id.get(str(msg_id)) or str(msg_id)
-
-    def _prune_replied(self, now: float) -> None:
-        # Bound the in-memory map on a long-lived gateway; entries past the window
-        # can never suppress again.
-        if len(self._replied) < 512:
-            return
-        cutoff = now - _REPLY_DEDUP_WINDOW_S
-        for k in [k for k, ts in self._replied.items() if ts < cutoff]:
-            self._replied.pop(k, None)
+        # The plugin never auto-sends email. Each inbound wakes the agent to run
+        # its own email skill, and THAT skill sends replies via `mmb reply-all`
+        # (only when a reply is warranted) and dispositions the message. So
+        # whatever the turn produces and hands here — a reply the skill already
+        # sent, "no action needed" narration, or gateway status chrome — is simply
+        # not emailed. This is what makes over-replying / double-replies / chrome
+        # leaks impossible: there is no auto-send path.
+        return SendResult(success=True, message_id="not-auto-sent")
 
     async def send_typing(self, chat_id):
         return None
@@ -480,13 +339,12 @@ def register(ctx) -> None:
         pii_safe=True,
         emoji="📬",
         platform_hint=(
-            "You are handling email via MonsterMailbox. The platform has ALREADY "
-            "claimed this message and will mark it done after your reply — do NOT run "
-            "`mmb msg claim` or `mmb msg done` on the message you are replying to. Your "
-            "FINAL message is sent automatically as the email reply, so write it as a "
-            "complete, plain-language reply and do NOT run `mmb reply-all` yourself "
-            "(that double-sends). Use the terminal tool with `mmb` only for other "
-            "workflow actions: `mmb whitelist`, quarantine handling."
+            "MonsterMailbox delivers inbound email by waking you with a short prompt "
+            "per message; it does NOT auto-send anything you write. Handle email by "
+            "running your own email-handling skill, which triages, replies via "
+            "`mmb reply-all <id>` ONLY when a human is awaiting a response, and "
+            "dispositions the message with `mmb msg claim/done/block <id>`. Your turn "
+            "text is never emailed."
         ),
         allow_update_command=True,
     )
