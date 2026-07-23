@@ -27,6 +27,16 @@ import (
 // noticed promptly.
 const streamIdleTimeout = 45 * time.Second
 
+// streamMaxLifetime caps how long a single /events connection is used before
+// we proactively tear it down and reconnect (resuming via Last-Event-ID), even
+// when it still looks alive. This guards against a server-side per-connection
+// delivery wedge: the connection keeps emitting heartbeat comments (so the
+// idle watchdog never fires) but silently stops pushing inbox events. That
+// mode is invisible to streamIdleTimeout; a bounded lifetime forces a fresh
+// connection that re-establishes delivery. Reconnect is cheap and the resume
+// cursor prevents gaps.
+const streamMaxLifetime = 10 * time.Minute
+
 // inbox is the parent for `inbox list`, `inbox watch`, `inbox wait`.
 func newInboxCmd() *cobra.Command {
 	c := &cobra.Command{
@@ -382,7 +392,19 @@ func advanceCursor(current, candidate string) string {
 }
 
 func streamOnce(out io.Writer, cli *client.Client, opts eventStreamOptions, lastEventID *string) (bool, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+	// Hard-bound this connection's lifetime. Deadline = earliest of the caller's
+	// overall --timeout (wait) and streamMaxLifetime. This is what actually
+	// enforces `wait --timeout`: without it, a stream that heartbeats but never
+	// delivers a matching event spins the read loop below forever (the idle
+	// watchdog keeps getting reset by heartbeats), and runEventStream never gets
+	// back to its between-reconnect deadline check. For `watch` (no overall
+	// deadline) streamMaxLifetime forces a periodic reconnect to shake off a
+	// wedged-but-heartbeating connection.
+	deadline := time.Now().Add(streamMaxLifetime)
+	if !opts.overallDeadline.IsZero() && opts.overallDeadline.Before(deadline) {
+		deadline = opts.overallDeadline
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 
 	var headers map[string]string

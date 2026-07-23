@@ -115,6 +115,7 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         if getattr(self, "logger", None) is None:
             self.logger = logging.getLogger("monstermailbox")
         self._watch_task: Optional[asyncio.Task] = None
+        self._reconcile_task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         self._seen: set[str] = set()  # msg ids we've already woken the agent for
         allow = os.getenv("MMB_ALLOWED_SENDERS", "").strip()
@@ -126,15 +127,54 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         if self._watch_task and not self._watch_task.done():
             return True  # already running; never spawn a duplicate watcher
         self._watch_task = asyncio.create_task(self._poll_loop())
+        # Independent safety-net task — does NOT share fate with the watcher, so
+        # a wedged/dead _poll_loop can't take the reconcile down with it.
+        if self._reconcile_task is None or self._reconcile_task.done():
+            self._reconcile_task = asyncio.create_task(self._reconcile_loop())
         return True
 
     async def disconnect(self, **kwargs):
         self._stop.set()
-        if self._watch_task:
-            self._watch_task.cancel()
+        for task in (self._watch_task, self._reconcile_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    async def _reconcile(self):
+        """Wake the agent for any undispositioned trusted inbox mail the SSE
+        watcher didn't deliver. Dedups via _seen, so it never double-wakes a
+        message already handled in real time. Safe to run concurrently with the
+        watcher and the periodic loop."""
+        listing = await self._mmb_json(
+            "inbox", "list", "--work-state", "inbox", "--state", "trusted", "--peek"
+        )
+        for m in (listing or {}).get("messages", []):
+            if self._stop.is_set():
+                break
+            await self._on_inbox_new({"message_id": m.get("id")})
+
+    async def _reconcile_loop(self):
+        # Independent hourly safety net. The real-time path is the SSE watcher;
+        # this exists solely to guarantee a hard floor if that path ever fails
+        # silently (server-side delivery wedge, a wedged watcher, etc.) — mail is
+        # then caught within the interval instead of sitting forever. Runs once
+        # immediately (flushes any backlog on connect) then every hour. An error
+        # here must never kill the loop — that silent-death is the whole bug class
+        # we're defending against.
+        while not self._stop.is_set():
             try:
-                await self._watch_task
+                await self._reconcile()
             except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.logger.warning("MonsterMailbox periodic reconcile error: %s", e)
+            # Interruptible sleep: wakes immediately on disconnect.
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=3600)
+            except asyncio.TimeoutError:
                 pass
 
     async def _poll_loop(self):
@@ -146,15 +186,10 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
         backoff = 1.0
         while not self._stop.is_set():
             # 1) Reconcile: pick up anything already queued (covers the gap
-            #    between successive wait calls). _on_inbox_new dedups via _seen.
+            #    between successive `wait` calls — the SSE resume cursor does
+            #    NOT persist across separate `wait` processes). _seen dedups.
             try:
-                listing = await self._mmb_json(
-                    "inbox", "list", "--work-state", "inbox", "--state", "trusted", "--peek"
-                )
-                for m in (listing or {}).get("messages", []):
-                    if self._stop.is_set():
-                        break
-                    await self._on_inbox_new({"message_id": m.get("id")})
+                await self._reconcile()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -172,7 +207,11 @@ class MonsterMailboxAdapter(BasePlatformAdapter):
                     stderr=asyncio.subprocess.DEVNULL,
                     env=_mmb_env(),
                 )
-                out, _ = await proc.communicate()
+                # Hard wall-clock guard. `mmb inbox wait` self-bounds at 120s,
+                # but NEVER let a wedged child freeze this loop — the reconcile
+                # above shares it, and an unguarded communicate() on a hung
+                # `wait` is exactly what stalled a live agent for 7 days.
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=150)
                 backoff = 1.0
                 if self._stop.is_set():
                     break
