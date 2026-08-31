@@ -1,16 +1,18 @@
 {
   "id": "monstermailbox",
   "name": "MonsterMailbox",
-  "description": "Streams inbound agent email from MonsterMailbox (mmb inbox watch / GET /events) and replies via the mmb CLI. No webhook required.",
+  "description": "Streams inbound agent email from MonsterMailbox (mmb inbox wait + reconcile) and replies via the mmb CLI. No webhook required.",
   "version": "1.0.0",
   "activation": { "onStartup": true },
   "configSchema": {
     "type": "object",
+    "additionalProperties": false,
     "properties": {
-      "sessionKey": { "type": "string", "default": "openclaw_main" },
+      "sessionKey": { "type": "string", "default": "agent:main:subagent:monstermailbox" },
       "state": { "type": "string", "default": "trusted" },
       "allowedSenders": { "type": "array", "items": { "type": "string" } },
-      "mmbBin": { "type": "string", "default": "mmb" }
+      "mmbBin": { "type": "string", "default": "mmb" },
+      "mmbProfile": { "type": "string" }
     }
   }
 }
