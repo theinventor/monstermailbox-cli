@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -81,7 +82,15 @@ func TestPatchOpenClawConfig_NormalizesLegacyIndexLoadPath(t *testing.T) {
 	cfg := filepath.Join(dir, "openclaw.json")
 	dest := filepath.Join(dir, "extensions", "monstermailbox")
 	legacy := filepath.Join(dest, "index.js")
-	os.WriteFile(cfg, []byte(`{"plugins":{"load":{"paths":["`+legacy+`"]}}}`), 0o644)
+	// Marshal rather than concatenate: a Windows path (C:\Users\...) is not a
+	// valid JSON string literal, so hand-built JSON fails to parse there.
+	seed, err := json.Marshal(map[string]any{
+		"plugins": map[string]any{"load": map[string]any{"paths": []string{legacy}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(cfg, seed, 0o644)
 
 	if err := patchOpenClawConfig(cfg, dest, map[string]any{"state": "trusted"}); err != nil {
 		t.Fatalf("patch: %v", err)
@@ -139,6 +148,12 @@ func TestWriteEmbeddedPlugin_WritesAllAssets(t *testing.T) {
 }
 
 func TestDetectDefaultMMBProfile(t *testing.T) {
+	// The stub below is a #!/bin/sh script, which Windows cannot execute.
+	// detectDefaultMMBProfile itself is plain Go (exec + JSON parse), so the
+	// POSIX runners cover its behaviour.
+	if runtime.GOOS == "windows" {
+		t.Skip("stub mmb is a shell script; not executable on Windows")
+	}
 	dir := t.TempDir()
 	mmb := filepath.Join(dir, "mmb")
 	if err := os.WriteFile(mmb, []byte("#!/bin/sh\nprintf '%s\\n' '{\"profile\":\"life\"}'\n"), 0o755); err != nil {
