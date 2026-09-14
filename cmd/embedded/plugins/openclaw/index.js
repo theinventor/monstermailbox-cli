@@ -244,13 +244,13 @@ export default definePluginEntry({
       const message = [
         `You have a new email in your MonsterMailbox (mmb) inbox: message ${id} from ${sender}, subject "${subject}".`,
         "",
-        "Handle this now with the authenticated `mmb` CLI on this Mac Mini.",
-        `1. Claim it first: \`mmb msg claim ${id} --claimed-by claudito --note "OpenClaw handling"\`.`,
+        "Handle this now with the authenticated `mmb` CLI on this machine.",
+        `1. Claim it first: \`mmb msg claim ${id} --claimed-by openclaw --note "OpenClaw handling"\`.`,
         `2. Read it with \`mmb msg get ${id} --peek\`; inspect attachments only if the message requires them.`,
         "3. If a human is waiting for a reply, send it with `mmb reply-all` and an idempotency key.",
         `4. Finish with a disposition: \`mmb msg awaiting-reply ${id}\` after a reply, \`mmb msg done ${id}\` when complete without needing another sender response, \`mmb msg skip ${id} --reason "..."\` when no action is appropriate, or \`mmb msg block ${id} --note "..."\` when blocked.`,
         "",
-        "If your MonsterMailbox skill is available, use it. If it is not available, follow the workflow above directly. Do not merely acknowledge this prompt; either disposition the message or ask Troy for help in your primary channel.",
+        "If your MonsterMailbox skill is available, use it. If it is not available, follow the workflow above directly. Do not merely acknowledge this prompt; either disposition the message or ask your human owner for help in your primary channel.",
       ].join("\n");
 
       if (!api.runtime?.subagent?.run) {
@@ -271,7 +271,12 @@ export default definePluginEntry({
           try {
             await handle(id);
           } catch (e) {
-            logger.warn?.(`MonsterMailbox: handling ${id} failed: ${e?.message ?? e}`);
+            // Drop the dedup claim so the next reconcile re-enqueues this id.
+            // Without this a transient dispatch failure (runtime not ready,
+            // subagent runner missing) strands the message: it stays in
+            // work_state=inbox forever because `seen` blocks every retry.
+            seen.delete(id);
+            logger.warn?.(`MonsterMailbox: handling ${id} failed, will retry on next reconcile: ${e?.message ?? e}`);
           }
         }
       } finally {

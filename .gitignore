@@ -23,3 +23,6 @@ coverage.txt
 go.work
 go.work.sum
 __pycache__/
+
+# Local debug notes — personal, and this repo is public
+memory/
