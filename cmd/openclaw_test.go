@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -76,6 +77,32 @@ func TestPatchOpenClawConfig_IdempotentPaths(t *testing.T) {
 	}
 }
 
+func TestPatchOpenClawConfig_NormalizesLegacyIndexLoadPath(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "openclaw.json")
+	dest := filepath.Join(dir, "extensions", "monstermailbox")
+	legacy := filepath.Join(dest, "index.js")
+	// Marshal rather than concatenate: a Windows path (C:\Users\...) is not a
+	// valid JSON string literal, so hand-built JSON fails to parse there.
+	seed, err := json.Marshal(map[string]any{
+		"plugins": map[string]any{"load": map[string]any{"paths": []string{legacy}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(cfg, seed, 0o644)
+
+	if err := patchOpenClawConfig(cfg, dest, map[string]any{"state": "trusted"}); err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+
+	got := readJSON(t, cfg)
+	paths := got["plugins"].(map[string]any)["load"].(map[string]any)["paths"].([]any)
+	if len(paths) != 1 || paths[0] != dest {
+		t.Errorf("load.paths should keep only package dir %q; got %v", dest, paths)
+	}
+}
+
 func TestWriteEmbeddedPlugin_WritesAllAssets(t *testing.T) {
 	dest := t.TempDir()
 	if err := writeEmbeddedPlugin(openclawPluginFS, openclawPluginEmbedRoot, dest); err != nil {
@@ -90,6 +117,50 @@ func TestWriteEmbeddedPlugin_WritesAllAssets(t *testing.T) {
 	manifest := readJSON(t, filepath.Join(dest, "openclaw.plugin.json"))
 	if manifest["id"] != "monstermailbox" {
 		t.Errorf("manifest id = %v, want monstermailbox", manifest["id"])
+	}
+	schema := manifest["configSchema"].(map[string]any)
+	if schema["additionalProperties"] != false {
+		t.Errorf("manifest configSchema.additionalProperties = %v, want false", schema["additionalProperties"])
+	}
+	properties := schema["properties"].(map[string]any)
+	sessionKey := properties["sessionKey"].(map[string]any)
+	if sessionKey["default"] != defaultOpenClawSessionKey {
+		t.Errorf("manifest sessionKey default = %v, want %s", sessionKey["default"], defaultOpenClawSessionKey)
+	}
+	if _, ok := properties["mmbProfile"].(map[string]any); !ok {
+		t.Errorf("manifest should expose mmbProfile config, got %v", properties["mmbProfile"])
+	}
+
+	pkg := readJSON(t, filepath.Join(dest, "package.json"))
+	openclaw := pkg["openclaw"].(map[string]any)
+	extensions := openclaw["extensions"].([]any)
+	runtimeExtensions := openclaw["runtimeExtensions"].([]any)
+	if len(extensions) != 1 || extensions[0] != "./index.js" {
+		t.Errorf("package openclaw.extensions = %v, want [./index.js]", extensions)
+	}
+	if len(runtimeExtensions) != 1 || runtimeExtensions[0] != "./index.js" {
+		t.Errorf("package openclaw.runtimeExtensions = %v, want [./index.js]", runtimeExtensions)
+	}
+	identity := openclaw["plugin"].(map[string]any)
+	if identity["id"] != "monstermailbox" {
+		t.Errorf("package openclaw.plugin.id = %v, want monstermailbox", identity["id"])
+	}
+}
+
+func TestDetectDefaultMMBProfile(t *testing.T) {
+	// The stub below is a #!/bin/sh script, which Windows cannot execute.
+	// detectDefaultMMBProfile itself is plain Go (exec + JSON parse), so the
+	// POSIX runners cover its behaviour.
+	if runtime.GOOS == "windows" {
+		t.Skip("stub mmb is a shell script; not executable on Windows")
+	}
+	dir := t.TempDir()
+	mmb := filepath.Join(dir, "mmb")
+	if err := os.WriteFile(mmb, []byte("#!/bin/sh\nprintf '%s\\n' '{\"profile\":\"life\"}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectDefaultMMBProfile(mmb); got != "life" {
+		t.Fatalf("detectDefaultMMBProfile = %q, want life", got)
 	}
 }
 

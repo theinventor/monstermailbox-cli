@@ -21,13 +21,14 @@ import (
 var openclawPluginFS embed.FS
 
 const openclawPluginEmbedRoot = "embedded/plugins/openclaw"
+const defaultOpenClawSessionKey = "agent:main:subagent:monstermailbox"
 
 func newOpenClawCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "openclaw",
 		Short: "Integrate MonsterMailbox with an OpenClaw agent",
 		Long: `Install the MonsterMailbox plugin into an OpenClaw install so the agent
-receives inbound email over the SSE event stream (mmb inbox watch) and replies
+receives inbound email via mmb inbox wait/reconcile and replies
 via the mmb CLI — no webhook, no public endpoint, no signing secret.`,
 	}
 	c.AddCommand(newOpenClawInstallCmd())
@@ -35,7 +36,8 @@ via the mmb CLI — no webhook, no public endpoint, no signing secret.`,
 }
 
 func newOpenClawInstallCmd() *cobra.Command {
-	var home, sessionKey, state, allowed, mmbBin string
+	defaultMMBBin := detectDefaultMMBBin()
+	var home, sessionKey, state, allowed, mmbBin, mmbProfile string
 	var dryRun, force, noBackstop bool
 	var backstopInterval string
 
@@ -62,10 +64,16 @@ watcher, then verify with:  openclaw plugins inspect monstermailbox`,
 			}
 
 			destDir := filepath.Join(ocHome, "extensions", "monstermailbox")
+			if mmbProfile == "" && !dryRun {
+				mmbProfile = detectDefaultMMBProfile(mmbBin)
+			}
 			pluginCfg := map[string]any{
 				"sessionKey": sessionKey,
 				"state":      state,
 				"mmbBin":     mmbBin,
+			}
+			if mmbProfile != "" {
+				pluginCfg["mmbProfile"] = mmbProfile
 			}
 			if s := splitCSV(allowed); len(s) > 0 {
 				pluginCfg["allowedSenders"] = s
@@ -130,15 +138,38 @@ watcher, then verify with:  openclaw plugins inspect monstermailbox`,
 		},
 	}
 	c.Flags().StringVar(&home, "home", "", "OpenClaw home dir (default: $OPENCLAW_HOME or ~/.openclaw)")
-	c.Flags().StringVar(&sessionKey, "session-key", "openclaw_main", "OpenClaw session key for dispatched turns")
+	c.Flags().StringVar(&sessionKey, "session-key", defaultOpenClawSessionKey, "OpenClaw session key for dispatched turns")
 	c.Flags().StringVar(&state, "state", "trusted", "trust state to watch (trusted|quarantined|rejected)")
 	c.Flags().StringVar(&allowed, "allowed-senders", "", "comma-separated sender allow-list (default: rely on server trust state)")
-	c.Flags().StringVar(&mmbBin, "mmb-bin", "mmb", "path to the mmb binary the plugin shells out to")
+	c.Flags().StringVar(&mmbBin, "mmb-bin", defaultMMBBin, "path to the mmb binary the plugin shells out to")
+	c.Flags().StringVar(&mmbProfile, "mmb-profile", "", "saved mmb auth profile to use inside OpenClaw (default: current mmb whoami profile; empty if unavailable)")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "print what would happen, make no changes")
 	c.Flags().BoolVar(&force, "force", false, "overwrite an existing plugin directory")
 	c.Flags().StringVar(&backstopInterval, "backstop-interval", defaultBackstopInterval, "backstop cron interval (e.g. 15m, 30m, 1h)")
 	c.Flags().BoolVar(&noBackstop, "no-backstop", false, "do not install the backstop cron")
 	return c
+}
+
+func detectDefaultMMBBin() string {
+	if p, err := exec.LookPath("mmb"); err == nil && p != "" {
+		return p
+	}
+	return "mmb"
+}
+
+func detectDefaultMMBProfile(mmbBin string) string {
+	out, err := exec.Command(mmbBin, "whoami").Output()
+	if err != nil {
+		return ""
+	}
+	var identity map[string]any
+	if err := json.Unmarshal(out, &identity); err != nil {
+		return ""
+	}
+	if profile, ok := identity["profile"].(string); ok {
+		return profile
+	}
+	return ""
 }
 
 func resolveOpenClawHome(override string) (string, error) {
@@ -224,7 +255,7 @@ func patchOpenClawConfig(cfgPath, destDir string, pluginCfg map[string]any) erro
 
 	plugins := childMap(root, "plugins")
 	load := childMap(plugins, "load")
-	load["paths"] = appendUnique(load["paths"], destDir)
+	load["paths"] = appendUnique(normalizeOpenClawPluginLoadPaths(load["paths"], destDir), destDir)
 
 	entries := childMap(plugins, "entries")
 	entries["monstermailbox"] = map[string]any{
@@ -264,6 +295,21 @@ func appendUnique(current any, val string) []any {
 		}
 	}
 	return append(list, val)
+}
+
+func normalizeOpenClawPluginLoadPaths(current any, destDir string) []any {
+	var out []any
+	legacyFilePath := filepath.Join(destDir, "index.js")
+	if existing, ok := current.([]any); ok {
+		for _, e := range existing {
+			s, ok := e.(string)
+			if ok && (s == destDir || s == legacyFilePath) {
+				continue
+			}
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func splitCSV(s string) []string {
